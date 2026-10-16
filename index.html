@@ -1,0 +1,1209 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>GHOSTWRITER — Stage 5</title>
+<style>
+  html, body { margin:0; height:100%; background:#080604; overflow:hidden;
+               user-select:none; -webkit-user-select:none; }
+  canvas { display:block; cursor:none; touch-action:none; }
+  #vignette { position:fixed; inset:0; pointer-events:none;
+    background: radial-gradient(ellipse at 50% 45%,
+      transparent 55%, rgba(3,2,1,0.85) 100%); }
+  #card { position:fixed; max-width:300px; pointer-events:none; z-index:10;
+    font-family: Georgia, 'Times New Roman', serif; text-align:left;
+    color:#e9d7b5; opacity:0; transition:opacity 0.5s;
+    text-shadow: 0 0 14px rgba(255,190,110,0.28); }
+  #card .era { font-size:11px; letter-spacing:0.25em; text-transform:uppercase;
+    color:#a98d63; margin-bottom:10px; }
+  #card .line { font-size:15px; line-height:1.55; margin:0 0 10px 0;
+    opacity:0; transform:translateY(4px);
+    transition:opacity 0.9s ease, transform 0.9s ease; }
+  #card.show { opacity:1; }
+  #card.show .line { opacity:1; transform:none; }
+</style>
+</head>
+<body>
+<canvas id="room"></canvas>
+<div id="vignette"></div>
+<div id="card"></div>
+<script>
+"use strict";
+/* ====== GHOSTWRITER — Stage 5: Sound and the Last Chapter (complete) ======
+   The room speaks. The book fills. The watching ends; the staying doesn't.
+   Records behavior only. Kept in this browser. Nothing else.
+   ?watch · ?reset · ?kiosk=1 */
+
+// ---------- seeded PRNG ----------
+function mulberry32(seed){
+  return function(){
+    seed|=0; seed=(seed+0x6D2B79F5)|0;
+    let t=Math.imul(seed^(seed>>>15),1|seed);
+    t=(t+Math.imul(t^(t>>>7),61|t))^t;
+    return ((t^(t>>>14))>>>0)/4294967296;
+  };
+}
+
+// ---------- flags ----------
+const WATCH=/[?&]watch/.test(location.search);
+const KIOSK=(function(){
+  if(/[?&]kiosk=1/.test(location.search)) return true;
+  if(/[?&]kiosk=0/.test(location.search)) return false;
+  return (('ontouchstart' in window)||navigator.maxTouchPoints>0) &&
+         !(window.matchMedia && window.matchMedia('(pointer: fine)').matches);
+})();
+const TAPR=KIOSK?1.6:1;
+const KEY='ghostwriter_v1';
+if(/[?&]reset/.test(location.search)){
+  try{ localStorage.removeItem(KEY); }catch(e){}
+}
+
+// ---------- canvas ----------
+const canvas=document.getElementById('room');
+const ctx=canvas.getContext('2d');
+let vw=0, vh=0, dpr=1;
+function resize(){
+  dpr=Math.min(2,window.devicePixelRatio||1);
+  vw=window.innerWidth; vh=window.innerHeight;
+  canvas.width=vw*dpr; canvas.height=vh*dpr;
+  canvas.style.width=vw+'px'; canvas.style.height=vh+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  layout();
+}
+function glowSprite(R, rgb){
+  const c=document.createElement('canvas'); c.width=c.height=R*2;
+  const g=c.getContext('2d');
+  const rg=g.createRadialGradient(R,R,0,R,R,R);
+  rg.addColorStop(0,'rgba('+rgb+',1)');
+  rg.addColorStop(1,'rgba('+rgb+',0)');
+  g.fillStyle=rg; g.fillRect(0,0,R*2,R*2);
+  return c;
+}
+const PALMG=glowSprite(70,'255,214,140');
+const LAMPG=glowSprite(150,'255,200,120');
+const COOLG=glowSprite(70,'170,190,235');
+
+// ---------- layout ----------
+let LAY=null;
+function layout(){
+  const floorY=vh*0.78;
+  const doorW=Math.max(56,vw*0.055);
+  const doorH=Math.min(vh*0.52,floorY*0.64);
+  const door={ax:Math.max(52,vw*0.10),ay:floorY-doorH/2,
+             w:doorW,h:doorH,top:floorY-doorH,
+             r:Math.max(64,doorW*TAPR)};
+  const win={ax:vw*0.60,ay:Math.min(vh*0.40,floorY*0.42),
+             w:Math.max(120,vw*0.11),h:Math.max(140,vh*0.24),
+             r:80*TAPR};
+  const desk={cx:vw*0.68,top:floorY-92,w:Math.max(170,vw*0.17)};
+  const clock={ax:vw*0.335,ay:Math.max(76,vh*0.26),r:46*TAPR};
+  const lamp={ax:desk.cx+desk.w*0.28,ay:desk.top-58,r:50*TAPR};
+  const book={ax:desk.cx-desk.w*0.26,ay:desk.top-8,r:38*TAPR};
+  const drawer={ax:desk.cx,ay:desk.top+26,r:44*TAPR};
+  const page={ax:desk.cx,ay:desk.top+25,r:34*TAPR};
+  const chair={ax:Math.min(vw*0.565,desk.cx-desk.w/2-26),ay:floorY-44,r:52*TAPR};
+  const board={ax:vw*0.36,ay:floorY-4,r:48*TAPR};
+  const ledger={ax:vw-34,ay:vh-34,r:30*TAPR};
+  LAY={floorY,door,win,desk,clock,lamp,book,drawer,page,chair,board,ledger};
+}
+
+// ---------- room state ----------
+const S={lampOn:true,doorOpen:false,drawerOpen:false,boardLifted:false,
+         seated:false,shown:{}};
+
+/* ============ SOUND: the room speaks ============ */
+let AC=null, master=null, noiseBuf=null;
+let droneGain=null, droneFilt=null, rainGain=null;
+let lastShudder=false, lastSnd=0;
+function armAudio(){
+  if(AC){ if(AC.state==='suspended') AC.resume(); return; }
+  try{
+    AC=new (window.AudioContext||window.webkitAudioContext)();
+    master=AC.createGain(); master.gain.value=0.8; master.connect(AC.destination);
+    const len=AC.sampleRate*2;
+    noiseBuf=AC.createBuffer(1,len,AC.sampleRate);
+    const d=noiseBuf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+    // the room-tone: deepens as the room learns you
+    const ds=AC.createBufferSource(); ds.buffer=noiseBuf; ds.loop=true;
+    droneFilt=AC.createBiquadFilter(); droneFilt.type='lowpass';
+    droneFilt.frequency.value=70; droneFilt.Q.value=0.4;
+    droneGain=AC.createGain(); droneGain.gain.value=0;
+    ds.connect(droneFilt); droneFilt.connect(droneGain); droneGain.connect(master);
+    ds.start();
+    // the rain, for when it has learned to rain
+    const rs=AC.createBufferSource(); rs.buffer=noiseBuf; rs.loop=true;
+    const rf=AC.createBiquadFilter(); rf.type='bandpass';
+    rf.frequency.value=1400; rf.Q.value=0.5;
+    rainGain=AC.createGain(); rainGain.gain.value=0;
+    rs.connect(rf); rf.connect(rainGain); rainGain.connect(master);
+    rs.start();
+  }catch(e){}
+}
+function noiseShot(dur,vol,type,freq,q,sweepTo,delay){
+  if(!AC||AC.state!=='running') return;
+  const t0=AC.currentTime+(delay||0);
+  const src=AC.createBufferSource(); src.buffer=noiseBuf;
+  src.playbackRate.value=0.8+Math.random()*0.4;
+  const f=AC.createBiquadFilter(); f.type=type;
+  f.frequency.setValueAtTime(freq,t0); f.Q.value=q||1;
+  if(sweepTo) f.frequency.exponentialRampToValueAtTime(sweepTo,t0+dur);
+  const g=AC.createGain();
+  g.gain.setValueAtTime(0.0001,t0);
+  g.gain.linearRampToValueAtTime(vol,t0+dur*0.15);
+  g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+  src.connect(f); f.connect(g); g.connect(master);
+  src.start(t0); src.stop(t0+dur+0.05);
+}
+function tone(freq,vol,dur,delay){
+  if(!AC||AC.state!=='running') return;
+  const t0=AC.currentTime+(delay||0);
+  const o=AC.createOscillator(); o.type='sine'; o.frequency.value=freq;
+  const g=AC.createGain();
+  g.gain.setValueAtTime(0.0001,t0);
+  g.gain.linearRampToValueAtTime(vol,t0+dur*0.2);
+  g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+  o.connect(g); g.connect(master);
+  o.start(t0); o.stop(t0+dur+0.05);
+}
+function sfxLamp(){ noiseShot(0.05,0.10,'highpass',2500,1); tone(2100,0.02,0.04); }
+function sfxDoor(){ noiseShot(0.35,0.045,'lowpass',260,2,120); }
+function sfxSlide(){ noiseShot(0.18,0.04,'bandpass',900,1.2); }
+function sfxGroan(p){ noiseShot(0.9,0.06,'lowpass',p||170,2.5,50); }
+function sfxRattle(v){
+  for(let i=0;i<4;i++)
+    noiseShot(0.03,0.02+0.025*v,'bandpass',760+Math.random()*140,2,
+               undefined,i*0.055+Math.random()*0.02);
+}
+function sfxPen(delay){
+  noiseShot(0.30+Math.random()*0.15,0.03,'bandpass',2400+Math.random()*600,1.8,
+             undefined,delay);
+}
+function sfxPage(){ noiseShot(0.28,0.05,'bandpass',1500,1,500); }
+function sfxChime(){ tone(523.25,0.018,1.0,0); tone(659.25,0.014,1.2,0.18); }
+
+// ---------- the watchers: behavior only ----------
+const OBJ=['door','window','clock','lamp','book','drawer','page','board','chair','ledger'];
+const FACTABLE=['door','window','clock','lamp','book','drawer','board','chair'];
+const tel={dwell:{},taps:{},approaches:{},retreats:{},hesit:{},hovMax:{},
+           idle:0,seq:[],tapSeq:[],path:[],events:[]};
+for(const k of OBJ){
+  tel.dwell[k]=0; tel.taps[k]=0; tel.approaches[k]=0;
+  tel.retreats[k]=0; tel.hesit[k]=0; tel.hovMax[k]=0;
+}
+let sessionStart=Date.now(), sessionStartT=performance.now();
+let hovEnterT=0, tappedDuringHover=false, lastMoveT=performance.now();
+let doorE=0, moonE=0;
+let ledgerOpen=false, cardKind=null, bookPage=0, bookUnread=false;
+let chapters=[], confessed={}, bookDone=false, myArrival=1;
+let actedDoor=false, actedBoard=false;
+let habits={lamp:null,doorClose:false,boardSettle:false,drawerPressure:0,
+            rainOn:false,distantLight:false};
+
+function loadAll(){
+  try{
+    const d=JSON.parse(localStorage.getItem(KEY)||'null');
+    if(d&&!Array.isArray(d.chapters)) d.chapters=[];
+    if(d&&!d.confessed) d.confessed={};
+    if(d&&!d.bookDone) d.bookDone=false;
+    return d;
+  }catch(e){ return null; }
+}
+function liveSession(){
+  const s={start:sessionStart,end:Date.now(),dwell:{},taps:{},approaches:{},retreats:{},
+           hesit:{},hovMax:{},idle:tel.idle,seq:tel.seq,tapSeq:tel.tapSeq,
+           events:tel.events.slice(-8),pathLen:tel.path.length,
+           lampOn:S.lampOn,doorOpen:S.doorOpen,
+           drawerOpen:S.drawerOpen,boardLifted:S.boardLifted};
+  for(const k of OBJ){
+    s.dwell[k]=tel.dwell[k]; s.taps[k]=tel.taps[k];
+    s.approaches[k]=tel.approaches[k]; s.retreats[k]=tel.retreats[k];
+    s.hesit[k]=tel.hesit[k]; s.hovMax[k]=tel.hovMax[k];
+  }
+  return s;
+}
+function persist(){
+  try{
+    const d=loadAll()||{sessions:[],chapters:[]};
+    const cur=liveSession();
+    const i=d.sessions.findIndex(s=>s.start===sessionStart);
+    if(i>=0) d.sessions[i]=cur; else d.sessions.push(cur);
+    if(d.sessions.length>24) d.sessions.shift();
+    d.chapters=chapters;
+    d.confessed=confessed;
+    d.bookDone=bookDone;
+    localStorage.setItem(KEY,JSON.stringify(d));
+  }catch(e){}
+}
+window.addEventListener('beforeunload',persist);
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) persist(); });
+
+// ---------- arrivals ----------
+const REFRESH_MS=45000;
+function arrivalCount(list){
+  let n=0, prevEnd=0;
+  for(const s of list){
+    if(!prevEnd||(s.start-prevEnd)>REFRESH_MS) n++;
+    prevEnd=s.end||s.start;
+  }
+  return Math.max(1,n);
+}
+function aggSessions(list){
+  const agg={dwell:{},taps:{},approaches:{},retreats:{},hesit:{},hovMax:{},idle:0};
+  for(const k of OBJ){
+    agg.dwell[k]=0; agg.taps[k]=0; agg.approaches[k]=0;
+    agg.retreats[k]=0; agg.hesit[k]=0; agg.hovMax[k]=0;
+  }
+  for(const s of list){
+    agg.idle+=s.idle||0;
+    for(const k of OBJ){
+      agg.dwell[k]+=(s.dwell&&s.dwell[k])||0;
+      agg.taps[k]+=(s.taps&&s.taps[k])||0;
+      agg.approaches[k]+=(s.approaches&&s.approaches[k])||0;
+      agg.retreats[k]+=(s.retreats&&s.retreats[k])||0;
+      agg.hesit[k]+=(s.hesit&&s.hesit[k])||0;
+      agg.hovMax[k]=Math.max(agg.hovMax[k],(s.hovMax&&s.hovMax[k])||0);
+    }
+  }
+  return agg;
+}
+
+/* ============ THE BIOGRAPHER ============ */
+const PEN={
+  lamp:  {p:112,f:()=>'The lamp was already '+(habits.lamp?'on':'off')+
+           ' when you came. You taught it that.'},
+  rain:  {p:111,f:()=>'It has started raining when you come. The room does not know '+
+           'why it does it. It only knows you.'},
+  light: {p:110,f:()=>'There is a light on, far away, across the dark. The room put '+
+           'it there. It would like you to think someone is waiting.'},
+  drawer:{p:109,f:()=>'The drawer has begun to tremble when you come near it. '+
+           'It has learned to want, from you.'},
+  doorC: {p:108,f:()=>'You left the door open, and the house closed it. '+
+           'It has learned closing from you.'},
+  boardS:{p:107,f:()=>'You left the floorboard up, and the house put it back. '+
+           'It learned that from you, too.'}
+};
+function composeChapter(n, prior, pending){
+  if(!prior.length) return null;
+  const r=mulberry32(((n*2654435761)^(prior[0].start))|0);
+  const agg=aggSessions(prior);
+  const last=prior[prior.length-1];
+  const C=[];
+  for(const id of pending) if(PEN[id]) C.push([PEN[id].p,PEN[id].f()]);
+  if(agg.taps.drawer===0&&agg.approaches.drawer>=3)
+    C.push([100,'You came to the drawer '+agg.approaches.drawer+
+      ' times without opening it. It is the only thing here that has learned to expect you.']);
+  else if(agg.taps.drawer===0&&agg.hesit.drawer>0)
+    C.push([99,'You stood at the drawer for '+(agg.hovMax.drawer/1000).toFixed(0)+
+      ' seconds once, and left it shut. The room wrote that down before you finished deciding.']);
+  else if(agg.taps.drawer>0&&(last.taps&&last.taps.drawer))
+    C.push([98,'You opened the drawer this time. The note was still there. It is always there.']);
+  else if(agg.taps.drawer>0)
+    C.push([97,'You opened the drawer once, and not again. The note keeps.']);
+  const firsts=[];
+  for(const s of prior){ if(s.seq&&s.seq.length) firsts.push(s.seq[0][1]); }
+  if(firsts.length>=2&&firsts.every(f=>f===firsts[0]))
+    C.push([95,'You went to the '+firsts[0]+' first, again, before anything else. It is where your hand lives.']);
+  for(const k of FACTABLE){
+    if(agg.approaches[k]===0){
+      if(k==='book')
+        C.push([92,'You have still not touched the book. It is patient. It is the only patient thing in this room, and it is about you.']);
+      else
+        C.push([70,'The '+k+' has gone untouched through every visit. The room does not mind. It records the not-touching too.']);
+      break;
+    }
+  }
+  let top=null;
+  for(const k of FACTABLE)
+    if(agg.dwell[k]>15000&&(!top||agg.dwell[k]>agg.dwell[top])) top=k;
+  if(top){
+    if(top==='window')
+      C.push([90,'You stay longest at the window. There is nothing out there tonight, and you stay anyway. The room has stopped wondering why.']);
+    else{
+      const mins=agg.dwell[top]/60000;
+      C.push([85,mins>=1
+        ?'You stay longest at the '+top+' \u2014 '+mins.toFixed(1)+' minutes this visit.'
+        :'You stay longest at the '+top+'.']);
+    }
+  }
+  if(agg.taps.lamp>=prior.length)
+    C.push([88,'You changed the light, again. The room keeps your habits the way other houses keep photographs.']);
+  else if(last.lampOn===false)
+    C.push([87,'You left the lamp off when you went. The moon read the desk without you. It reads faster than you do.']);
+  if(agg.taps.board>=prior.length)
+    C.push([86,'You lifted the floorboard again. You always put it back. The house has stopped guessing what you hope is under it.']);
+  if(agg.idle>=60000)
+    C.push([80,'For '+(agg.idle/60000).toFixed(0)+
+      ' minutes of your visits, you did nothing at all. The room counted that as staying. It counts everything as staying.']);
+  if(prior.length>=2){
+    const hrs=prior.map(s=>new Date(s.start).getHours());
+    if(hrs.every(h=>h>=20||h<5))
+      C.push([82,'You come at night. Every time, at night. The clock keeps this without being asked.']);
+    else if(hrs.every(h=>h>=8&&h<18))
+      C.push([82,'You come in daylight. The room is not used to it. It wrote that down too.']);
+  }
+  if(agg.taps.chair>0)
+    C.push([75,'You sat in the chair. As far as the room knows, no one has ever sat in it but you.']);
+  if(agg.taps.ledger>0)
+    C.push([78,'You read what was kept about you. The room does not mind. It wrote that down too.']);
+  if(last.pathLen&&last.pathLen>900)
+    C.push([72,'Your hand would not rest last visit \u2014 '+last.pathLen+
+      ' points of it. The room kept what it could follow.']);
+
+  C.sort((a,b)=>b[0]-a[0]);
+  const take=n>=5?3:2;
+  const lines=[];
+  if(n===2){
+    lines.push('You came back.');
+  } else {
+    const open=[
+      'You came back. You are becoming a habit.',
+      'Visit '+n+'. The room was not surprised.',
+      'You arrived. The clock made a note of when.',
+      'Back again. The room tidied nothing. It only waits, and writes.'
+    ];
+    lines.push(open[(r()*open.length)|0]);
+  }
+  const facts=C.slice(0,take).map(c=>c[1]);
+  lines.push(...facts);
+  if(!facts.length)
+    lines.push('You were here. The room noticed you being here. That was the whole of it.');
+  const clos=[
+    'The ink was dry before you read this. It always is.',
+    'Something will be different next time. The room will notice what.',
+    'This was written before you arrived. Everything here is.',
+    'The room does not assume. It writes down.'
+  ];
+  lines.push(clos[(r()*clos.length)|0]);
+  return {n, lines};
+}
+
+/* ============ THE LAST CHAPTER ============ */
+function composeLast(n, prior){
+  const agg=aggSessions(prior);
+  const v=arrivalCount(prior)+1;
+  let learned=0;
+  if(habits.lamp!==null) learned++;
+  if(habits.doorClose) learned++;
+  if(habits.boardSettle) learned++;
+  if(habits.rainOn) learned++;
+  if(habits.distantLight) learned++;
+  const lines=[];
+  lines.push('This is the last chapter. The book is full, and the pen is resting.');
+  lines.push('You came here '+v+' times, and the room learned '+learned+
+    (learned===1?' thing from you.':' things from you.')+' It is keeping all of them.');
+  if(agg.taps.drawer>0)
+    lines.push('You opened the drawer, in the end. The stranger\u2019s minute is yours now, too.');
+  else
+    lines.push('You never opened the drawer. The note is still in there, keeping a stranger\u2019s minute. The room suspects you know it by heart anyway.');
+  lines.push('You are reading this in the light you chose. That is the way it will stay.');
+  if(agg.idle>=60000)
+    lines.push('You spent '+(agg.idle/60000).toFixed(0)+
+      ' minutes of your visits doing nothing at all. The room counted every one of them as staying.');
+  lines.push('You were not being watched, all this time. You were being kept company. '+
+    'The room knows the difference, because it wrote it down.');
+  let close='Come back whenever you like. There will be nothing new to read.';
+  if(habits.rainOn) close+=' But the rain will know you.';
+  if(habits.distantLight) close+=' And the far light will stay on.';
+  close+=' The room is not going anywhere. It never was.';
+  lines.push(close);
+  return {n, lines, last:true};
+}
+
+// ---------- on arrival: learn, apply, compose ----------
+(function arrive(){
+  const stored=loadAll()||{sessions:[],chapters:[]};
+  chapters=stored.chapters||[];
+  confessed=stored.confessed||{};
+  bookDone=stored.bookDone||false;
+  const ss=stored.sessions;
+  let idx=0, prevEnd=0;
+  const arrIdx=[];
+  for(const s of ss){
+    if(!prevEnd||(s.start-prevEnd)>REFRESH_MS) idx++;
+    arrIdx.push(idx);
+    prevEnd=s.end||s.start;
+  }
+  const live={start:sessionStart,end:sessionStart};
+  const curArr=arrivalCount(ss.concat([live]));
+  myArrival=curArr;
+  const prior=ss.filter((s,i)=>arrIdx[i]<curArr);
+  const priorArr=arrivalCount(prior);
+
+  habits.rainOn = curArr>=5;
+  habits.distantLight = curArr>=7;
+  if(priorArr>=2&&prior.length>=2){
+    const lastLamp=prior[prior.length-1].lampOn;
+    if(prior.every(s=>s.lampOn===lastLamp)) habits.lamp=lastLamp;
+    else habits.lamp=null;
+  }
+  if(priorArr>=3&&prior.every(s=>s.doorOpen===false)) habits.doorClose=true;
+  if(priorArr>=3&&prior.every(s=>s.boardLifted===false)) habits.boardSettle=true;
+  let dp=0;
+  for(const s of prior){
+    if((s.taps&&s.taps.drawer)>0) dp=0;
+    else dp+=((s.approaches&&s.approaches.drawer)||0)+((s.hesit&&s.hesit.drawer)||0);
+  }
+  habits.drawerPressure=Math.min(dp,24);
+
+  if(habits.lamp!==null) S.lampOn=habits.lamp;
+
+  const pending=[];
+  if(habits.lamp!==null&&!confessed.lamp) pending.push('lamp');
+  if(habits.rainOn&&!confessed.rain) pending.push('rain');
+  if(habits.distantLight&&!confessed.light) pending.push('light');
+  if(habits.drawerPressure>=6&&!confessed.drawer) pending.push('drawer');
+  const ev={};
+  for(const s of prior) for(const e of (s.events||[])) ev[e]=true;
+  if(ev.doorC&&!confessed.doorC) pending.push('doorC');
+  if(ev.boardS&&!confessed.boardS) pending.push('boardS');
+
+  // the book closes only when it has nothing left to tell you except goodbye
+  if(!bookDone&&curArr>=2&&prior.length&&!chapters.find(c=>c.n===curArr)){
+    let ch=null;
+    if(curArr>=8&&pending.length===0){
+      ch=composeLast(curArr,prior);
+      bookDone=true;
+    } else {
+      ch=composeChapter(curArr,prior,pending);
+    }
+    if(ch){
+      chapters.push(ch);
+      chapters.sort((a,b)=>a.n-b.n);
+      if(chapters.length>12) chapters.shift();
+      bookUnread=true;
+      for(const id of pending) confessed[id]=true;
+      persist();
+    }
+  }
+})();
+
+// ---------- pointer & presence ----------
+const palm={x:0,y:0}, mouse={x:0,y:0};
+let hoverId=null, downX=0, downY=0, cardOpen=false;
+function nearest(x,y){
+  if(S.drawerOpen){
+    const p=LAY.page;
+    if((p.ax-x)**2+(p.ay-y)**2<=p.r*p.r) return 'page';
+  }
+  let best=null,bd=1e9;
+  const cand=[['door',LAY.door],['window',LAY.win],['clock',LAY.clock],
+              ['lamp',LAY.lamp],['book',LAY.book],['drawer',LAY.drawer],
+              ['board',LAY.board],['chair',LAY.chair],['ledger',LAY.ledger]];
+  for(const c of cand){
+    const d=(c[1].ax-x)**2+(c[1].ay-y)**2;
+    if(d<c[1].r*c[1].r && d<bd){ bd=d; best=c[0]; }
+  }
+  return best;
+}
+canvas.addEventListener('pointerdown',e=>{
+  if(e.button!==0) return;
+  armAudio();                       // the room is silent until you touch it
+  mouse.x=palm.x=e.clientX; mouse.y=palm.y=e.clientY;
+  downX=e.clientX; downY=e.clientY;
+});
+window.addEventListener('pointermove',e=>{
+  mouse.x=e.clientX; mouse.y=e.clientY;
+  lastMoveT=performance.now();
+});
+canvas.addEventListener('pointerup',e=>{
+  if(Math.hypot(e.clientX-downX,e.clientY-downY)>8) return;
+  act(nearest(e.clientX,e.clientY),e.clientX,e.clientY);
+});
+
+// ---------- object actions ----------
+function act(id,x,y){
+  if(ledgerOpen&&id!=='ledger') ledgerOpen=false;
+  if(!id){ if(cardOpen) closeCard(); return; }
+  tel.taps[id]++; tappedDuringHover=true;
+  tel.tapSeq.push([Math.round(performance.now()-sessionStartT),id]);
+  if(tel.tapSeq.length>40) tel.tapSeq.shift();
+  if(id==='lamp'){ S.lampOn=!S.lampOn; sfxLamp(); }
+  else if(id==='door'){
+    S.doorOpen=!S.doorOpen; sfxDoor();
+    if(S.doorOpen && !S.shown.door){ S.shown.door=true; openCard(cardDoor(),x,y); }
+  }
+  else if(id==='drawer'){
+    if(!S.drawerOpen) habits.drawerPressure=0;
+    S.drawerOpen=!S.drawerOpen; sfxSlide();
+    if(!S.drawerOpen) closeCard();
+  }
+  else if(id==='page'){ openCard(cardNote(),x,y); }
+  else if(id==='book'){
+    if(chapters.length){
+      if(cardOpen&&cardKind==='book'){
+        bookPage--;
+        if(bookPage<0) closeCard();
+        else showChapter(bookPage,x,y);
+      } else {
+        bookPage=chapters.length-1;
+        showChapter(bookPage,x,y);
+      }
+      bookUnread=false;
+    } else openCard(cardBook(),x,y);
+  }
+  else if(id==='clock'){ openCard(cardClock(),x,y); }
+  else if(id==='ledger'){ ledgerOpen=!ledgerOpen; if(cardOpen) closeCard(); }
+  else if(id==='board'){
+    S.boardLifted=!S.boardLifted;
+    if(S.boardLifted) openCard(cardBoard(),x,y);
+  }
+  else if(id==='chair'){
+    S.seated=!S.seated;
+    if(S.seated && !S.shown.chair){ S.shown.chair=true; openCard(cardChair(),x,y); }
+  }
+  else if(id==='window'){ openCard(cardWindow(),x,y); }
+  persist();
+}
+
+// ---------- the cards ----------
+const cardEl=document.getElementById('card');
+function openCard(c,x,y,kind){
+  cardOpen=true; cardKind=kind||null;
+  cardEl.innerHTML='';
+  const era=document.createElement('div');
+  era.className='era'; era.textContent=c.era;
+  cardEl.appendChild(era);
+  c.lines.forEach((txt,i)=>{
+    const el=document.createElement('p');
+    el.className='line';
+    el.style.transitionDelay=(0.1+i*1.05)+'s';
+    el.textContent=txt;
+    cardEl.appendChild(el);
+  });
+  cardEl.style.left=Math.min(Math.max(x+36,12),Math.max(12,vw-320))+'px';
+  cardEl.style.top=Math.min(Math.max(y-20,12),Math.max(12,vh-260))+'px';
+  requestAnimationFrame(()=>cardEl.classList.add('show'));
+}
+function closeCard(){ cardOpen=false; cardKind=null; cardEl.classList.remove('show'); }
+function showChapter(i,x,y){
+  const c=chapters[i];
+  const wasUnread=bookUnread;
+  openCard({era:c.last?'The Book \u00b7 The Last Chapter':'The Book \u00b7 Chapter '+c.n,
+            lines:c.lines},x,y,'book');
+  sfxPage();
+  if(c.last){                                     // the finale, undersung
+    tone(87.31,0.035,3.5,0);
+    tone(65.41,0.03,4.2,0.35);
+  } else if(wasUnread&&i===chapters.length-1){
+    sfxChime();
+  }
+  c.lines.forEach((_,li)=>sfxPen(0.12+li*1.05));   // the pen, drying line by line
+}
+function cardNote(){ return {era:'Found in the Drawer',lines:[
+  'A note, in a hand you do not recognize:',
+  '\u201cI only meant to stay a minute. The lamp remembers how long I stayed.\u201d']}; }
+function cardBook(){ return {era:'The Book on the Desk',lines:[
+  'The pages are blank. The binding is warm, as if it was held recently.',
+  'Something will be written here. Not yet. Not by you.']}; }
+function cardBoard(){ return {era:'Under the Floorboard',lines:[
+  'Dust, and a darkness heavier than the space should allow.',
+  'You will lift this board again. The house already knows that.']}; }
+function cardDoor(){ return {era:'The Door',lines:[
+  'It opens onto night, and the night does not come in.',
+  'The house does not close it for you. It waits to learn what you usually do.']}; }
+function cardWindow(){
+  if(habits.rainOn&&habits.distantLight) return {era:'The Window',lines:[
+    'It rains when you come now. It has learned that from you, somehow.',
+    'And the far light is on again. The room would like you to think someone is waiting.']};
+  if(habits.rainOn) return {era:'The Window',lines:[
+    'It is raining. It does that now, when you come.',
+    'You stand here longer than you mean to. You always will.']};
+  return {era:'The Window',lines:[
+    'Very still out there tonight. Something like rain, but slower.',
+    'You stand here longer than you mean to. You always will.']};
+}
+function cardChair(){ return {era:'The Chair',lines:[
+  'You sit. The house counts this as staying.',
+  'It is the only thing in the room that has ever been sat in gently.']}; }
+function cardClock(){ return {era:'The Clock',lines:[
+  'It keeps the real hour, wherever you really are.',
+  'The room is learning when you usually come.']}; }
+
+// ---------- ambience ----------
+const stars=[]; (function(){
+  const r=mulberry32(777);
+  for(let i=0;i<18;i++) stars.push({u:r(),v:r(),a:0.25+r()*0.55});
+})();
+const motes=[]; (function(){
+  const r=mulberry32(888);
+  for(let i=0;i<6;i++) motes.push({x:r(),y:0.25+r()*0.45,
+    vx:0.006+r()*0.012,ph:r()*Math.PI*2});
+})();
+
+// ---------- ledger facts ----------
+function facts(){
+  const stored=loadAll()||{sessions:[]};
+  const list=stored.sessions.slice();
+  list.push(liveSession());
+  const v=arrivalCount(list);
+  const acc=aggSessions(list);
+  const F=[];
+  if(v>=2) F.push('you have been here '+v+' times');
+  if(acc.approaches.drawer>=3&&acc.taps.drawer===0)
+    F.push('you keep almost opening the drawer');
+  const touched=FACTABLE.filter(k=>acc.approaches[k]>0);
+  if(touched.length>=3){
+    let shown=0;
+    for(const k of FACTABLE){
+      if(shown>=2) break;
+      if(acc.taps[k]===0&&acc.approaches[k]===0){
+        F.push('you have never so much as looked at the '+k); shown++;
+      }
+    }
+  }
+  let top=null;
+  for(const k of FACTABLE)
+    if(acc.dwell[k]>6000&&(!top||acc.dwell[k]>acc.dwell[top])) top=k;
+  if(top) F.push('the '+top+' is where you stay longest ('+(acc.dwell[top]/1000).toFixed(0)+'s)');
+  let lm=null;
+  for(const k of FACTABLE) if(!lm||acc.hovMax[k]>acc.hovMax[lm]) lm=k;
+  if(lm&&acc.hovMax[lm]>=8000)
+    F.push('longest you have stood anywhere: '+(acc.hovMax[lm]/1000).toFixed(0)+'s, at the '+lm);
+  if(v>=2&&acc.taps.lamp>=v) F.push('you always change the light');
+  if(v>=2&&acc.taps.board>=v) F.push('you always lift the floorboard');
+  if(v>=2){
+    const hrs=list.map(s=>new Date(s.start).getHours());
+    if(hrs.every(h=>h>=20||h<5)) F.push('every visit has been at night');
+    else if(hrs.every(h=>h>=8&&h<18)) F.push('every visit has been in daylight');
+  }
+  if(acc.idle>=60000)
+    F.push('you have spent '+(acc.idle/60000).toFixed(0)+' minutes of your visits doing nothing at all');
+  if(acc.hesit.drawer>0)
+    F.push('you have hesitated at the drawer '+acc.hesit.drawer+' time'+(acc.hesit.drawer>1?'s':''));
+  return F.slice(0,8);
+}
+
+// ---------- drawing ----------
+function hand(x,y,a,len,w,col){
+  ctx.strokeStyle=col; ctx.lineWidth=w; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(x,y);
+  ctx.lineTo(x+Math.cos(a)*len,y+Math.sin(a)*len);
+  ctx.stroke();
+}
+function drawRoom(t){
+  const L=LAY, fy=L.floorY;
+  const h=id=>objH[id];
+
+  const wall=ctx.createLinearGradient(0,0,0,fy);
+  wall.addColorStop(0,'#0d0b08');
+  wall.addColorStop(1,'#161209');
+  ctx.fillStyle=wall; ctx.fillRect(0,0,vw,fy);
+  ctx.strokeStyle='rgba(255,200,120,0.07)';
+  ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,fy); ctx.lineTo(vw,fy); ctx.stroke();
+
+  ctx.fillStyle='#151009'; ctx.fillRect(0,fy,vw,vh-fy);
+  ctx.strokeStyle='rgba(120,90,50,0.10)';
+  for(let i=0;i<3;i++){
+    const y=fy+(i+1)*(vh-fy)/4;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(vw,y); ctx.stroke();
+  }
+  for(let x=24;x<vw;x+=64){
+    ctx.beginPath();
+    const y=fy+((x/64)%2)*14;
+    ctx.moveTo(x,y); ctx.lineTo(x,y+(vh-fy)/4);
+    ctx.stroke();
+  }
+
+  const B=L.board, bw=46;
+  ctx.save();
+  ctx.translate(B.ax-bw/2,fy);
+  if(S.boardLifted) ctx.rotate(-0.10);
+  else ctx.rotate(h('board')*0.02*Math.sin(t*0.02));
+  ctx.fillStyle=S.boardLifted?'#2e2415':'#241b10';
+  ctx.fillRect(0,-8,bw,10);
+  ctx.strokeStyle='rgba(200,160,100,0.12)';
+  ctx.strokeRect(0,-8,bw,10);
+  ctx.restore();
+  if(S.boardLifted){
+    ctx.fillStyle='#040302';
+    ctx.fillRect(B.ax-bw/2+4,fy-2,bw-8,8);
+  }
+
+  const D=L.door, dx=D.ax-D.w/2;
+  const openW=D.w*(1-0.88*doorE);
+  if(doorE>0.01){
+    ctx.fillStyle='#05060c';
+    ctx.fillRect(dx+openW,D.top,D.w-openW,D.h);
+    const strip=ctx.createLinearGradient(dx+D.w-12,0,dx+D.w,0);
+    strip.addColorStop(0,'rgba(150,170,230,0)');
+    strip.addColorStop(1,'rgba(150,170,230,'+(0.08+0.12*doorE+h('door')*0.06)+')');
+    ctx.fillStyle=strip;
+    ctx.fillRect(dx+D.w-12,D.top,12,D.h);
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=0.10*doorE+h('door')*0.04;
+    ctx.drawImage(COOLG,D.ax-26,fy-26,52,52);
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+  }
+  ctx.fillStyle='#241c12';
+  ctx.fillRect(dx,D.top,openW,D.h);
+  ctx.strokeStyle='rgba(200,160,100,0.12)';
+  ctx.strokeRect(dx,D.top,openW,D.h);
+  if(openW>12){
+    ctx.fillStyle='rgba(255,206,120,'+(0.5+h('door')*0.4)+')';
+    ctx.beginPath();
+    ctx.arc(dx+openW-7,D.top+D.h*0.5,2.5,0,Math.PI*2);
+    ctx.fill();
+  }
+  ctx.strokeStyle='rgba(200,160,100,0.10)';
+  ctx.strokeRect(dx-4,D.top-4,D.w+8,D.h+4);
+
+  const C=L.clock, R=22;
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=0.10*h('clock');
+  ctx.drawImage(PALMG,C.ax-30,C.ay-30,60,60);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='#1a130c';
+  ctx.beginPath(); ctx.arc(C.ax,C.ay,R,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='rgba(200,170,120,0.25)'; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.strokeStyle='rgba(200,170,120,0.2)'; ctx.lineWidth=1;
+  for(let i=0;i<12;i++){
+    const a=i/12*Math.PI*2;
+    ctx.beginPath();
+    ctx.moveTo(C.ax+Math.cos(a)*(R-4),C.ay+Math.sin(a)*(R-4));
+    ctx.lineTo(C.ax+Math.cos(a)*(R-1.5),C.ay+Math.sin(a)*(R-1.5));
+    ctx.stroke();
+  }
+  const now=new Date();
+  const sec=now.getSeconds();
+  const min=now.getMinutes()+sec/60;
+  const hr=(now.getHours()%12)+min/60;
+  hand(C.ax,C.ay,hr/12*Math.PI*2-Math.PI/2,R*0.5,2,'rgba(233,215,181,0.9)');
+  hand(C.ax,C.ay,min/60*Math.PI*2-Math.PI/2,R*0.72,1.5,'rgba(233,215,181,0.9)');
+  hand(C.ax,C.ay,sec/60*Math.PI*2-Math.PI/2,R*0.8,0.8,'rgba(255,214,140,0.7)');
+  ctx.fillStyle='rgba(255,214,140,0.9)';
+  ctx.beginPath(); ctx.arc(C.ax,C.ay,1.5,0,Math.PI*2); ctx.fill();
+
+  drawWindow(t,moonE);
+
+  const K=L.desk;
+  ctx.fillStyle='#1e150d';
+  ctx.fillRect(K.cx-K.w/2,K.top,K.w,10);
+  ctx.fillRect(K.cx-K.w/2+10,K.top+10,12,K.h-10);
+  ctx.fillRect(K.cx+K.w/2-22,K.top+10,12,K.h-10);
+
+  const DR=L.drawer, dw=K.w*0.44, dh=24;
+  if(S.drawerOpen){
+    ctx.fillStyle='#060402';
+    ctx.fillRect(K.cx-dw/2,K.top+12,dw,dh+4);
+    const PG=LAY.page;
+    const pu=0.35+0.25*Math.sin(t*0.003);
+    ctx.save();
+    ctx.translate(PG.ax,PG.ay+Math.sin(t*0.0022)*1.2);
+    ctx.rotate(-0.07);
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=pu;
+    ctx.drawImage(PALMG,-26,-30,52,56);
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='#d9caa6';
+    ctx.fillRect(-20,-12,40,24);
+    ctx.strokeStyle='rgba(255,214,140,'+(0.35+0.25*Math.sin(t*0.003))+')';
+    ctx.strokeRect(-20,-12,40,24);
+    ctx.strokeStyle='rgba(90,70,40,0.5)';
+    ctx.beginPath();
+    ctx.moveTo(-20,-12); ctx.lineTo(0,0); ctx.lineTo(20,-12);
+    ctx.stroke();
+    ctx.restore();
+  }
+  let jit=0;
+  if(habits.drawerPressure>0&&!S.drawerOpen){
+    const base=Math.min(2.4,habits.drawerPressure*0.2);
+    jit=Math.sin(t*0.045+Math.sin(t*0.012)*2.5)*base*(0.35+0.65*h('drawer'));
+    if(Math.sin(t*0.0013)>0.94) jit+=Math.sin(t*0.09)*1.6;
+  }
+  ctx.save();
+  ctx.translate(K.cx+jit,K.top+26+(S.drawerOpen?12:0));
+  ctx.fillStyle='#241b12';
+  ctx.fillRect(-dw/2,-dh/2,dw,dh);
+  ctx.strokeStyle='rgba(200,160,100,0.14)';
+  ctx.strokeRect(-dw/2,-dh/2,dw,dh);
+  ctx.fillStyle='rgba(255,206,120,'+(0.5+h('drawer')*0.45)+')';
+  ctx.beginPath();
+  ctx.arc(0,0,2.5,0,Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+
+  const BK=L.book;
+  if(bookUnread){
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=0.20+0.12*Math.sin(t*0.004);
+    ctx.drawImage(PALMG,BK.ax-26,BK.ay-26,52,52);
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+  }
+  ctx.save();
+  ctx.translate(BK.ax,BK.ay);
+  ctx.rotate(-0.05);
+  ctx.fillStyle='#3a2a1c';
+  ctx.fillRect(-24,-7,48,9);
+  ctx.fillStyle='#4a3524';
+  ctx.fillRect(-26,-9,52,4);
+  ctx.fillStyle='#cbbf9f';
+  ctx.fillRect(-24,-6,46,1.5);
+  if(h('book')>0.1){
+    ctx.strokeStyle='rgba(230,215,170,'+(h('book')*0.5)+')';
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(-18,-8);
+    ctx.quadraticCurveTo(-4,-14-h('book')*6,8,-8);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  const LP=L.lamp;
+  ctx.fillStyle='#22190f';
+  ctx.beginPath();
+  ctx.ellipse(LP.ax,K.top+8,14,5,0,0,Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle='#2c2214';
+  ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.moveTo(LP.ax,K.top+6);
+  ctx.lineTo(LP.ax+6,LP.ay);
+  ctx.stroke();
+  ctx.save();
+  ctx.translate(LP.ax+6,LP.ay);
+  ctx.fillStyle=S.lampOn?'#4a3620':'#2a2015';
+  ctx.beginPath();
+  ctx.moveTo(-20,2); ctx.lineTo(20,2);
+  ctx.lineTo(10,-16); ctx.lineTo(-10,-16);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle='rgba(200,160,100,0.2)';
+  ctx.stroke();
+  ctx.restore();
+  if(S.lampOn){
+    const fl=h('lamp');
+    const flick=0.06+0.03*Math.sin(t*(0.02+fl*0.05))+fl*0.06;
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=Math.min(0.5,0.22+flick);
+    ctx.drawImage(LAMPG,LP.ax+6-150,LP.ay-150,300,300);
+    ctx.globalAlpha=0.9;
+    ctx.fillStyle='rgba(255,226,170,0.9)';
+    ctx.beginPath();
+    ctx.arc(LP.ax+6,LP.ay+4,3.5,0,Math.PI*2);
+    ctx.fill();
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+  }
+
+  const C2=LAY.chair;
+  ctx.save();
+  ctx.translate(C2.ax,C2.ay);
+  ctx.fillStyle='#1f170f';
+  ctx.fillRect(-22,0,44,6);
+  ctx.fillRect(-26,-52,7,54);
+  ctx.fillRect(-18,6,5,34);
+  ctx.fillRect(14,6,5,34);
+  if(S.seated){
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=0.15;
+    ctx.drawImage(PALMG,-30,-40,60,60);
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+  }
+  ctx.restore();
+
+  ctx.globalCompositeOperation='lighter';
+  for(const m of motes){
+    m.x+=m.vx*0.016;
+    if(m.x>1.05) m.x=-0.05;
+    const y=(m.y*vh)+Math.sin(t*0.001+m.ph)*12;
+    ctx.globalAlpha=S.lampOn?0.09:0.045;
+    ctx.drawImage(PALMG,m.x*vw-7,y-7,14,14);
+  }
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+
+  if(!S.lampOn){
+    ctx.fillStyle='rgba(8,10,20,'+(0.55-0.10*moonE)+')';
+    ctx.fillRect(0,0,vw,vh);
+    drawWindow(t,moonE);
+    drawMoonbeam(t,moonE);
+  }
+
+  const LG=LAY.ledger;
+  const lp=ledgerOpen?0.5:0.22+0.14*Math.sin(t*0.002);
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=lp+0.2;
+  ctx.drawImage(PALMG,LG.ax-16,LG.ay-16,32,32);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(255,214,140,'+(0.6+0.3*Math.sin(t*0.002))+')';
+  ctx.beginPath();
+  ctx.arc(LG.ax,LG.ay,2.5,0,Math.PI*2);
+  ctx.fill();
+  if(ledgerOpen){
+    ctx.strokeStyle='rgba(255,214,140,0.5)';
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.arc(LG.ax,LG.ay,10+2*Math.sin(t*0.01),0,Math.PI*2);
+    ctx.stroke();
+  }
+}
+
+function drawWindow(t,m){
+  const L=LAY, W=L.win, h=objH['window'];
+  const ix=W.ax-W.w/2, iy=W.ay-W.h/2;
+  const boost=0.55+0.9*m;
+  const rainDim=habits.rainOn?0.85:1;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(ix,iy,W.w,W.h);
+  ctx.clip();
+  ctx.fillStyle='#0a0f1c';
+  ctx.fillRect(ix,iy,W.w,W.h);
+  ctx.fillStyle='#dfe6f5';
+  for(const s of stars){
+    ctx.globalAlpha=Math.min(1,s.a*boost*rainDim*(0.5+0.5*Math.sin(t*0.0008+s.u*30)));
+    ctx.fillRect(ix+s.u*W.w,iy+s.v*W.h,1.2,1.2);
+  }
+  ctx.globalAlpha=1;
+  const mx=ix+W.w*0.24, my=iy+W.h*0.26;
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=(0.30+0.5*m+h*0.2)*rainDim;
+  ctx.drawImage(PALMG,mx-(26+m*8),my-(26+m*8),(26+m*8)*2,(26+m*8)*2);
+  ctx.globalAlpha=1;
+  ctx.fillStyle='#e8ecf5';
+  ctx.beginPath();
+  ctx.arc(mx,my,6+2*m,0,Math.PI*2);
+  ctx.fill();
+  if(habits.rainOn){
+    ctx.strokeStyle='rgba(160,180,215,0.30)';
+    ctx.lineWidth=1;
+    for(let i=0;i<9;i++){
+      const rx=ix+((i*47.3+13)%W.w);
+      const ry=iy+((t*0.06+i*57)%W.h);
+      ctx.beginPath();
+      ctx.moveTo(rx,ry); ctx.lineTo(rx-1.5,ry+9);
+      ctx.stroke();
+    }
+  }
+  if(habits.distantLight){
+    const dx2=ix+W.w*0.78, dy2=iy+W.h*0.82;
+    ctx.globalAlpha=0.35+0.15*Math.sin(t*0.002);
+    ctx.drawImage(PALMG,dx2-10,dy2-10,20,20);
+    ctx.globalAlpha=0.92;
+    ctx.fillStyle='rgba(255,214,140,0.95)';
+    ctx.fillRect(dx2-1.5,dy2-2,3,4);
+    ctx.globalAlpha=1;
+  }
+  const rx0=ix+((t*0.008)%(W.w+40))-20;
+  const ry0=iy+((t*0.02)%(W.h+30))-15;
+  ctx.globalAlpha=0.16+0.22*m+h*0.2;
+  ctx.fillStyle='#aebddb';
+  ctx.fillRect(rx0,ry0,1,7);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+  ctx.restore();
+  ctx.strokeStyle='rgba(200,170,120,0.22)';
+  ctx.lineWidth=3;
+  ctx.strokeRect(ix,iy,W.w,W.h);
+  ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.moveTo(W.ax,iy); ctx.lineTo(W.ax,iy+W.h);
+  ctx.moveTo(ix,W.ay); ctx.lineTo(ix+W.w,W.ay);
+  ctx.stroke();
+}
+
+function drawMoonbeam(t,m){
+  if(m<0.02) return;
+  const W=LAY.win, K=LAY.desk;
+  const sway=Math.sin(t*0.00005)*18;
+  const x1=W.ax-W.w*0.36, y1=W.ay+W.h*0.52;
+  const x2=W.ax+W.w*0.36, y2=W.ay+W.h*0.52;
+  const ex=K.cx-K.w*0.10+sway;
+  const x3=ex-K.w*0.38, y3=K.top+3;
+  const x4=ex+K.w*0.30, y4=K.top+3;
+  const g=ctx.createLinearGradient(W.ax,y1,ex,K.top);
+  g.addColorStop(0,'rgba(170,190,235,'+(0.20*m)+')');
+  g.addColorStop(1,'rgba(170,190,235,0)');
+  ctx.globalCompositeOperation='lighter';
+  ctx.fillStyle=g;
+  ctx.beginPath();
+  ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+  ctx.lineTo(x4,y4); ctx.lineTo(x3,y3);
+  ctx.closePath(); ctx.fill();
+  ctx.globalAlpha=0.16*m;
+  ctx.drawImage(COOLG,ex-60,K.top-18,120,44);
+  if(m>0.4){
+    const BK=LAY.book;
+    ctx.globalAlpha=(m-0.4)*0.6;
+    ctx.drawImage(PALMG,BK.ax-16,BK.ay-16,32,32);
+  }
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+}
+
+// ---------- the ledger panel ----------
+let factsCache=null, factsT=0;
+function drawLedger(t){
+  const stored=loadAll();
+  const list=stored?stored.sessions.slice():[];
+  list.push(liveSession());
+  const n=arrivalCount(list);
+  ctx.fillStyle='rgba(255,206,120,0.14)';
+  for(const p of tel.path) ctx.fillRect(p[0],p[1],1.5,1.5);
+  if(t-factsT>1500){ factsCache=facts(); factsT=t; }
+  const F=factsCache||[];
+  const learned=[];
+  if(habits.lamp!==null) learned.push('the lamp keeps your light');
+  if(habits.doorClose) learned.push('the door keeps itself closed');
+  if(habits.boardSettle) learned.push('the board settles itself');
+  if(habits.drawerPressure>0) learned.push('the drawer wants (pressure '+habits.drawerPressure+')');
+  if(habits.rainOn) learned.push('it rains for you now');
+  if(habits.distantLight) learned.push('the far light is lit');
+  if(bookDone) learned.push('the book is done');
+  const seq=tel.seq.slice(-6).map(e=>e[1]).join(' > ');
+  const x=14,y=14,w=302;
+  const shown=OBJ.filter(k=>k!=='page'||S.drawerOpen);
+  const lh=14;
+  const hh=26+4*lh+shown.length*lh+18+F.length*lh+22+(learned.length?learned.length*lh+18:0)+12;
+  ctx.fillStyle='rgba(10,8,6,0.88)';
+  ctx.fillRect(x,y,w,hh);
+  ctx.strokeStyle='rgba(255,190,110,0.25)';
+  ctx.strokeRect(x,y,w,hh);
+  ctx.font='10px monospace';
+  ctx.fillStyle='#ffd9a0';
+  ctx.fillText('THE LEDGER',x+10,y+18);
+  ctx.fillStyle='#a98d63';
+  ctx.fillText('behavior only \u00b7 kept in this browser \u00b7 nothing else',x+10,y+32);
+  ctx.fillText('arrival '+n+' \u00b7 path '+tel.path.length+
+               ' \u00b7 idle '+(tel.idle/1000).toFixed(0)+'s \u00b7 watching: '+(hoverId||'nothing'),
+               x+10,y+46);
+  ctx.fillText('sequence: '+(seq||'\u2014'),x+10,y+60);
+  ctx.fillStyle='#e9d7b5';
+  let yy=y+78;
+  for(const k of shown){
+    ctx.fillText(k.padEnd(9)+
+      'dwell '+(tel.dwell[k]/1000).toFixed(1)+'s '+
+      't'+tel.taps[k]+' a'+tel.approaches[k]+' r'+tel.retreats[k]+' '+
+      'hes'+tel.hesit[k]+' max'+(tel.hovMax[k]/1000).toFixed(1)+'s',
+      x+10,yy);
+    yy+=lh;
+  }
+  yy+=4;
+  ctx.fillStyle='#a98d63';
+  ctx.fillText('WHAT THE BIOGRAPHER COULD SAY',x+10,yy); yy+=lh;
+  ctx.fillStyle='#c9e4a8';
+  if(!F.length){ ctx.fillText('\u00b7 nothing worth saying. yet.',x+10,yy); yy+=lh; }
+  for(const f of F){ ctx.fillText('\u00b7 '+f,x+10,yy); yy+=lh; }
+  if(learned.length){
+    yy+=4;
+    ctx.fillStyle='#a98d63';
+    ctx.fillText('THE ROOM HAS LEARNED',x+10,yy); yy+=lh;
+    ctx.fillStyle='#e9c9a8';
+    for(const l of learned){ ctx.fillText('\u00b7 '+l,x+10,yy); yy+=lh; }
+  }
+}
+
+// ---------- the loop ----------
+const objH={};
+for(const k of OBJ) objH[k]=0;
+let lastT=performance.now(), lastPath=0, lastSave=0;
+function frame(t){
+  const dt=Math.min(120,t-lastT); lastT=t;
+
+  doorE+=((S.doorOpen?1:0)-doorE)*Math.min(1,dt/600);
+  moonE+=((S.lampOn?0:1)-moonE)*Math.min(1,dt/9000);
+
+  // the room acts on what it has learned — with a sound of its own
+  if(!cardOpen&&!ledgerOpen&&t-lastMoveT>30000&&!hoverId){
+    if(habits.doorClose&&S.doorOpen&&!actedDoor){
+      S.doorOpen=false; actedDoor=true; tel.events.push('doorC'); sfxGroan(140);
+    }
+    if(habits.boardSettle&&S.boardLifted&&!actedBoard){
+      S.boardLifted=false; actedBoard=true; tel.events.push('boardS'); sfxGroan(210);
+    }
+  }
+
+  // the drawer, when it wants loudly enough
+  const shud=habits.drawerPressure>0&&!S.drawerOpen&&Math.sin(t*0.0013)>0.94;
+  if(shud&&!lastShudder) sfxRattle(Math.min(1,habits.drawerPressure/12));
+  lastShudder=shud;
+
+  // the room-tone deepens with every arrival; the rain rises at the window
+  if(AC&&AC.state==='running'&&t-lastSnd>300){
+    lastSnd=t;
+    droneGain.gain.setTargetAtTime(Math.min(0.006+myArrival*0.003,0.035),
+                                   AC.currentTime,0.8);
+    droneFilt.frequency.setTargetAtTime(Math.max(40,72-myArrival*4),
+                                       AC.currentTime,0.8);
+    const rg=(habits.rainOn?0.004:0)+((hoverId==='window'&&habits.rainOn)?0.012:0);
+    rainGain.gain.setTargetAtTime(rg,AC.currentTime,0.4);
+  }
+
+  palm.x+=(mouse.x-palm.x)*0.14;
+  palm.y+=(mouse.y-palm.y)*0.14;
+  if(t-lastPath>250){
+    lastPath=t;
+    tel.path.push([Math.round(palm.x),Math.round(palm.y)]);
+    if(tel.path.length>3000) tel.path.shift();
+  }
+  const nowHover=(cardOpen||ledgerOpen)?null:nearest(palm.x,palm.y);
+  if(nowHover!==hoverId){
+    if(hoverId){
+      const ep=t-hovEnterT;
+      if(!tappedDuringHover){
+        tel.retreats[hoverId]++;
+        if(ep>=2000) tel.hesit[hoverId]++;
+      }
+    }
+    if(nowHover){
+      tel.approaches[nowHover]++;
+      hovEnterT=t;
+      tel.seq.push([Math.round(t-sessionStartT),nowHover]);
+      if(tel.seq.length>80) tel.seq.shift();
+    }
+    tappedDuringHover=false;
+    hoverId=nowHover;
+  }
+  if(hoverId){
+    tel.dwell[hoverId]+=dt;
+    const ep=t-hovEnterT;
+    if(ep>tel.hovMax[hoverId]) tel.hovMax[hoverId]=ep;
+  }
+  if(t-lastMoveT>1500 && !hoverId) tel.idle+=dt;
+  for(const k of OBJ) objH[k]+=(((hoverId===k)?1:0)-objH[k])*0.12;
+  if(t-lastSave>15000){ persist(); lastSave=t; }
+
+  ctx.clearRect(0,0,vw,vh);
+  drawRoom(t);
+
+  ctx.globalCompositeOperation='lighter';
+  const cg=S.seated?0.15:(S.lampOn?0.32:0.42);
+  ctx.globalAlpha=cg;
+  ctx.drawImage(PALMG,palm.x-70,palm.y-70);
+  ctx.globalAlpha=1;
+  ctx.fillStyle='rgba(255,232,180,0.9)';
+  ctx.beginPath();
+  ctx.arc(palm.x,palm.y,S.seated?1.5:2,0,Math.PI*2);
+  ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+
+  if(ledgerOpen||WATCH) drawLedger(t);
+  requestAnimationFrame(frame);
+}
+window.addEventListener('resize',resize); resize();
+
+// the room opens its eyes: first visit only
+(function firstVisit(){
+  const d=loadAll();
+  if(!d||!d.sessions.length){
+    openCard({era:'The Room',lines:[
+      'A lamp. A window. A door. A desk with a book on it, and a chair.',
+      'Something here keeps notes on how you spend your time with it. The small light in the corner shows you what it keeps. It never tells anyone. It cannot.',
+      'Stay as long as you like. The room is not going anywhere.']},
+      vw/2-60,vh*0.30);
+  }
+})();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

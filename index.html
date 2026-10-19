@@ -2,8 +2,8 @@
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>GHOSTWRITER — Stage 5</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>GHOSTWRITER — Stage 6</title>
 <style>
   html, body { margin:0; height:100%; background:#080604; overflow:hidden;
                user-select:none; -webkit-user-select:none; }
@@ -14,7 +14,10 @@
   #card { position:fixed; max-width:300px; pointer-events:none; z-index:10;
     font-family: Georgia, 'Times New Roman', serif; text-align:left;
     color:#e9d7b5; opacity:0; transition:opacity 0.5s;
-    text-shadow: 0 0 14px rgba(255,190,110,0.28); }
+    background:rgba(8,6,4,0.82);
+    border:1px solid rgba(255,190,110,0.14);
+    border-radius:4px; padding:14px 16px;
+    text-shadow:0 1px 2px rgba(4,3,2,0.95), 0 0 10px rgba(4,3,2,0.8); }
   #card .era { font-size:11px; letter-spacing:0.25em; text-transform:uppercase;
     color:#a98d63; margin-bottom:10px; }
   #card .line { font-size:15px; line-height:1.55; margin:0 0 10px 0;
@@ -30,10 +33,11 @@
 <div id="card"></div>
 <script>
 "use strict";
-/* ====== GHOSTWRITER — Stage 5: Sound and the Last Chapter (complete) ======
-   The room speaks. The book fills. The watching ends; the staying doesn't.
+/* ====== GHOSTWRITER — Stage 6 (fitted) ======
+   Furniture baked. Ghosts are hints: one faint memory at a time, randomly.
+   Interact with what a memory belongs to, and it stands clear — briefly.
    Records behavior only. Kept in this browser. Nothing else.
-   ?watch · ?reset · ?kiosk=1 */
+   ?watch · ?reset · ?dev · ?kiosk=1 */
 
 // ---------- seeded PRNG ----------
 function mulberry32(seed){
@@ -47,6 +51,7 @@ function mulberry32(seed){
 
 // ---------- flags ----------
 const WATCH=/[?&]watch/.test(location.search);
+const DEV=/[?&]dev/.test(location.search);
 const KIOSK=(function(){
   if(/[?&]kiosk=1/.test(location.search)) return true;
   if(/[?&]kiosk=0/.test(location.search)) return false;
@@ -56,21 +61,17 @@ const KIOSK=(function(){
 const TAPR=KIOSK?1.6:1;
 const KEY='ghostwriter_v1';
 if(/[?&]reset/.test(location.search)){
-  try{ localStorage.removeItem(KEY); }catch(e){}
+  try{
+    localStorage.removeItem(KEY);
+    localStorage.removeItem('ghostwriter_fit');
+    localStorage.removeItem('ghostwriter_furn');
+  }catch(e){}
 }
 
 // ---------- canvas ----------
 const canvas=document.getElementById('room');
 const ctx=canvas.getContext('2d');
 let vw=0, vh=0, dpr=1;
-function resize(){
-  dpr=Math.min(2,window.devicePixelRatio||1);
-  vw=window.innerWidth; vh=window.innerHeight;
-  canvas.width=vw*dpr; canvas.height=vh*dpr;
-  canvas.style.width=vw+'px'; canvas.style.height=vh+'px';
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  layout();
-}
 function glowSprite(R, rgb){
   const c=document.createElement('canvas'); c.width=c.height=R*2;
   const g=c.getContext('2d');
@@ -84,38 +85,82 @@ const PALMG=glowSprite(70,'255,214,140');
 const LAMPG=glowSprite(150,'255,200,120');
 const COOLG=glowSprite(70,'170,190,235');
 
-// ---------- layout ----------
+/* ============ FURNITURE (BAKED — fitted in ?dev) ============ */
+const FURNKEY='ghostwriter_furn';
+const FKEYS=['floor','door','win','clock','desk','lamp','book','drawer','board','chair','ledger'];
+const DEF_FURN={
+  floor: {yF:0.78, sF:1},
+  door:  {xF:0.1,   yF:0.78,               sF:1},
+  win:   {xF:0.6041666666666666, yF:0.3356232427366448, sF:1.112281468679888},
+  clock: {xF:0.33968750000000003, yF:0.2768697282099344, sF:2.297244466024894},
+  desk:  {xF:0.7065625000000001, yF:0.6378209934395502, sF:1.195092568622311},
+  lamp:  {xF:0.7378958333333333, yF:0.5714442361761949, sF:1},
+  book:  {xF:0.6745416666666667, yF:0.6362558575445173, sF:1},
+  drawer:{xF:0.6867708333333334, yF:0.6688837863167759, sF:1},
+  board: {xF:0.36,   yF:0.78,               sF:1},
+  chair: {xF:0.5691666666666666, yF:0.7062558575445173, sF:1.8845405921011305},
+  ledger:{xF:0.976,  yF:0.958,              sF:1}
+};
+let furn={};
+(function loadFurn(){
+  let saved=null;
+  try{ saved=JSON.parse(localStorage.getItem(FURNKEY)||'null'); }catch(e){}
+  for(const k of FKEYS)
+    furn[k]=Object.assign({},DEF_FURN[k],(saved&&saved[k])?saved[k]:{});
+})();
+function saveFurn(){
+  try{ localStorage.setItem(FURNKEY,JSON.stringify(furn)); }catch(e){}
+}
+
 let LAY=null;
 function layout(){
-  const floorY=vh*0.78;
-  const doorW=Math.max(56,vw*0.055);
-  const doorH=Math.min(vh*0.52,floorY*0.64);
-  const door={ax:Math.max(52,vw*0.10),ay:floorY-doorH/2,
-             w:doorW,h:doorH,top:floorY-doorH,
-             r:Math.max(64,doorW*TAPR)};
-  const win={ax:vw*0.60,ay:Math.min(vh*0.40,floorY*0.42),
-             w:Math.max(120,vw*0.11),h:Math.max(140,vh*0.24),
-             r:80*TAPR};
-  const desk={cx:vw*0.68,top:floorY-92,w:Math.max(170,vw*0.17)};
-  const clock={ax:vw*0.335,ay:Math.max(76,vh*0.26),r:46*TAPR};
-  const lamp={ax:desk.cx+desk.w*0.28,ay:desk.top-58,r:50*TAPR};
-  const book={ax:desk.cx-desk.w*0.26,ay:desk.top-8,r:38*TAPR};
-  const drawer={ax:desk.cx,ay:desk.top+26,r:44*TAPR};
-  const page={ax:desk.cx,ay:desk.top+25,r:34*TAPR};
-  const chair={ax:Math.min(vw*0.565,desk.cx-desk.w/2-26),ay:floorY-44,r:52*TAPR};
-  const board={ax:vw*0.36,ay:floorY-4,r:48*TAPR};
-  const ledger={ax:vw-34,ay:vh-34,r:30*TAPR};
-  LAY={floorY,door,win,desk,clock,lamp,book,drawer,page,chair,board,ledger};
+  const F=furn;
+  const floorY=F.floor.yF*vh;
+  const door={ ax:F.door.xF*vw, by:F.door.yF*vh,
+               w:vw*0.055*F.door.sF, h:vh*0.499*F.door.sF };
+  door.top=door.by-door.h;
+  door.ay=(door.top+door.by)/2;
+  door.r=Math.max(40,Math.max(door.w,door.h*0.45)*TAPR);
+  const win={ ax:F.win.xF*vw, ay:F.win.yF*vh,
+              w:vw*0.11*F.win.sF, h:vh*0.24*F.win.sF };
+  win.r=Math.max(50,Math.max(win.w,win.h)*0.55*TAPR);
+  const clock={ ax:F.clock.xF*vw, ay:F.clock.yF*vh, R:22*F.clock.sF };
+  clock.r=Math.max(26,clock.R*1.8*TAPR);
+  const desk={ cx:F.desk.xF*vw, top:F.desk.yF*vh,
+               w:vw*0.17*F.desk.sF, h:vh*0.115*F.desk.sF, s:F.desk.sF };
+  const lamp={ ax:F.lamp.xF*vw, ay:F.lamp.yF*vh, s:F.lamp.sF };
+  lamp.r=Math.max(28,36*lamp.s*TAPR);
+  const book={ ax:F.book.xF*vw, ay:F.book.yF*vh, s:F.book.sF };
+  book.r=Math.max(24,30*book.s*TAPR);
+  const drawer={ ax:F.drawer.xF*vw, ay:F.drawer.yF*vh,
+                 w:vw*0.075*F.drawer.sF, h:vh*0.03*F.drawer.sF, s:F.drawer.sF };
+  drawer.r=Math.max(26,Math.max(drawer.w,drawer.h)*TAPR);
+  const page={ ax:drawer.ax, ay:drawer.ay-2*drawer.s, r:Math.max(20,24*drawer.s*TAPR) };
+  const board={ ax:F.board.xF*vw, by:F.board.yF*vh, w:46*F.board.sF, s:F.board.sF };
+  board.ay=board.by-4;                      // FIX: hit-point existed nowhere before
+  board.r=Math.max(28,34*board.s*TAPR);
+  const chair={ ax:F.chair.xF*vw, ay:F.chair.yF*vh, s:F.chair.sF };
+  chair.r=Math.max(30,46*chair.s*TAPR);
+  const ledger={ ax:F.ledger.xF*vw, ay:F.ledger.yF*vh, s:F.ledger.sF };
+  ledger.r=Math.max(24,30*ledger.s*TAPR);
+  LAY={floorY,door,win,clock,desk,lamp,book,drawer,page,board,chair,ledger};
+}
+function resize(){
+  dpr=Math.min(2,window.devicePixelRatio||1);
+  vw=window.innerWidth; vh=window.innerHeight;
+  canvas.width=vw*dpr; canvas.height=vh*dpr;
+  canvas.style.width=vw+'px'; canvas.style.height=vh+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  layout();
 }
 
 // ---------- room state ----------
 const S={lampOn:true,doorOpen:false,drawerOpen:false,boardLifted:false,
          seated:false,shown:{}};
 
-/* ============ SOUND: the room speaks ============ */
+/* ============ SOUND ============ */
 let AC=null, master=null, noiseBuf=null;
 let droneGain=null, droneFilt=null, rainGain=null;
-let lastShudder=false, lastSnd=0;
 function armAudio(){
   if(AC){ if(AC.state==='suspended') AC.resume(); return; }
   try{
@@ -125,14 +170,12 @@ function armAudio(){
     noiseBuf=AC.createBuffer(1,len,AC.sampleRate);
     const d=noiseBuf.getChannelData(0);
     for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
-    // the room-tone: deepens as the room learns you
     const ds=AC.createBufferSource(); ds.buffer=noiseBuf; ds.loop=true;
     droneFilt=AC.createBiquadFilter(); droneFilt.type='lowpass';
     droneFilt.frequency.value=70; droneFilt.Q.value=0.4;
     droneGain=AC.createGain(); droneGain.gain.value=0;
     ds.connect(droneFilt); droneFilt.connect(droneGain); droneGain.connect(master);
     ds.start();
-    // the rain, for when it has learned to rain
     const rs=AC.createBufferSource(); rs.buffer=noiseBuf; rs.loop=true;
     const rf=AC.createBiquadFilter(); rf.type='bandpass';
     rf.frequency.value=1400; rf.Q.value=0.5;
@@ -167,21 +210,21 @@ function tone(freq,vol,dur,delay){
   o.connect(g); g.connect(master);
   o.start(t0); o.stop(t0+dur+0.05);
 }
-function sfxLamp(){ noiseShot(0.05,0.10,'highpass',2500,1); tone(2100,0.02,0.04); }
-function sfxDoor(){ noiseShot(0.35,0.045,'lowpass',260,2,120); }
-function sfxSlide(){ noiseShot(0.18,0.04,'bandpass',900,1.2); }
-function sfxGroan(p){ noiseShot(0.9,0.06,'lowpass',p||170,2.5,50); }
+function sfxLamp(){ noiseShot(0.05,0.20,'highpass',2500,1); tone(2100,0.04,0.04); }
+function sfxDoor(){ noiseShot(0.35,0.10,'lowpass',260,2,120); }
+function sfxSlide(){ noiseShot(0.18,0.09,'bandpass',900,1.2); }
+function sfxGroan(p){ noiseShot(0.9,0.13,'lowpass',p||170,2.5,50); }
 function sfxRattle(v){
   for(let i=0;i<4;i++)
-    noiseShot(0.03,0.02+0.025*v,'bandpass',760+Math.random()*140,2,
+    noiseShot(0.03,0.045+0.05*v,'bandpass',760+Math.random()*140,2,
                undefined,i*0.055+Math.random()*0.02);
 }
 function sfxPen(delay){
-  noiseShot(0.30+Math.random()*0.15,0.03,'bandpass',2400+Math.random()*600,1.8,
+  noiseShot(0.30+Math.random()*0.15,0.06,'bandpass',2400+Math.random()*600,1.8,
              undefined,delay);
 }
-function sfxPage(){ noiseShot(0.28,0.05,'bandpass',1500,1,500); }
-function sfxChime(){ tone(523.25,0.018,1.0,0); tone(659.25,0.014,1.2,0.18); }
+function sfxPage(){ noiseShot(0.28,0.11,'bandpass',1500,1,500); }
+function sfxChime(){ tone(523.25,0.035,1.0,0); tone(659.25,0.028,1.2,0.18); }
 
 // ---------- the watchers: behavior only ----------
 const OBJ=['door','window','clock','lamp','book','drawer','page','board','chair','ledger'];
@@ -195,7 +238,7 @@ for(const k of OBJ){
 let sessionStart=Date.now(), sessionStartT=performance.now();
 let hovEnterT=0, tappedDuringHover=false, lastMoveT=performance.now();
 let doorE=0, moonE=0;
-let ledgerOpen=false, cardKind=null, bookPage=0, bookUnread=false;
+let ledgerOpen=false, cardKind=null, cardObj=null, bookPage=0, bookUnread=false;
 let chapters=[], confessed={}, bookDone=false, myArrival=1;
 let actedDoor=false, actedBoard=false;
 let habits={lamp:null,doorClose:false,boardSettle:false,drawerPressure:0,
@@ -350,7 +393,6 @@ function composeChapter(n, prior, pending){
   if(last.pathLen&&last.pathLen>900)
     C.push([72,'Your hand would not rest last visit \u2014 '+last.pathLen+
       ' points of it. The room kept what it could follow.']);
-
   C.sort((a,b)=>b[0]-a[0]);
   const take=n>=5?3:2;
   const lines=[];
@@ -378,8 +420,6 @@ function composeChapter(n, prior, pending){
   lines.push(clos[(r()*clos.length)|0]);
   return {n, lines};
 }
-
-/* ============ THE LAST CHAPTER ============ */
 function composeLast(n, prior){
   const agg=aggSessions(prior);
   const v=arrivalCount(prior)+1;
@@ -411,7 +451,7 @@ function composeLast(n, prior){
   return {n, lines, last:true};
 }
 
-// ---------- on arrival: learn, apply, compose ----------
+// ---------- on arrival ----------
 (function arrive(){
   const stored=loadAll()||{sessions:[],chapters:[]};
   chapters=stored.chapters||[];
@@ -430,7 +470,6 @@ function composeLast(n, prior){
   myArrival=curArr;
   const prior=ss.filter((s,i)=>arrIdx[i]<curArr);
   const priorArr=arrivalCount(prior);
-
   habits.rainOn = curArr>=5;
   habits.distantLight = curArr>=7;
   if(priorArr>=2&&prior.length>=2){
@@ -446,9 +485,7 @@ function composeLast(n, prior){
     else dp+=((s.approaches&&s.approaches.drawer)||0)+((s.hesit&&s.hesit.drawer)||0);
   }
   habits.drawerPressure=Math.min(dp,24);
-
   if(habits.lamp!==null) S.lampOn=habits.lamp;
-
   const pending=[];
   if(habits.lamp!==null&&!confessed.lamp) pending.push('lamp');
   if(habits.rainOn&&!confessed.rain) pending.push('rain');
@@ -458,8 +495,6 @@ function composeLast(n, prior){
   for(const s of prior) for(const e of (s.events||[])) ev[e]=true;
   if(ev.doorC&&!confessed.doorC) pending.push('doorC');
   if(ev.boardS&&!confessed.boardS) pending.push('boardS');
-
-  // the book closes only when it has nothing left to tell you except goodbye
   if(!bookDone&&curArr>=2&&prior.length&&!chapters.find(c=>c.n===curArr)){
     let ch=null;
     if(curArr>=8&&pending.length===0){
@@ -478,6 +513,105 @@ function composeLast(n, prior){
     }
   }
 })();
+
+/* ============ THE MEMORY PORTRAITS (baked — hints, not tenants) ============ */
+const GHOST_DIR='ghosts/';
+const GNAMES=['window','drawer','seated','threshold','lamp','reader','board','idle'];
+const PREP=512;
+const DEF_FIT=[
+  {xF:0.5145833333333335,yF:0.7896860356138705,hF:0.39012697139935515,a:1,m:1},
+  {xF:0.6332291666666666,yF:0.8112417994376757,hF:0.3965459550005609,a:1,m:1},
+  {xF:0.5964583333333333,yF:0.8393580131208997,hF:0.40674243407827604,a:1,m:1},
+  {xF:0.16291666666666668,yF:0.7918744142455483,hF:0.37700836929127246,a:1,m:0},
+  {xF:0.7890625,yF:0.7940018744142455,hF:0.38715152326239033,a:1,m:1},
+  {xF:0.6363541666666667,yF:0.8262371134020619,hF:0.3998916424152541,a:1,m:1},
+  {xF:0.4063541666666666,yF:0.8193673851921275,hF:0.2715591284005035,a:1,m:1},
+  {xF:0.4535416666666666,yF:0.8131162136832241,hF:0.4460329857708602,a:1,m:1}
+];
+const fit=DEF_FIT;
+const ghosts=[];
+(function loadGhosts(){
+  for(let i=0;i<8;i++){
+    const g={ok:false,spr:null,fade:0,tgt:0,act:false,actPrev:false,wasIn:false,
+             ph:Math.random()*Math.PI*2};
+    const im=new Image();
+    im.onload=function(){
+      const c=document.createElement('canvas');
+      c.width=PREP; c.height=PREP;
+      c.getContext('2d').drawImage(im,0,0,PREP,PREP);
+      g.spr=c; g.ok=true;
+    };
+    im.onerror=function(){ g.ok=false; };
+    im.src=GHOST_DIR+(i+1)+'.png';
+    ghosts.push(g);
+  }
+})();
+const GHOST_LINK=['window','drawer','chair','door','lamp','book','board',null];
+let lifeAgg=null, lastAggT=0;
+function updateLife(t){
+  if(t-lastAggT<2000) return;
+  lastAggT=t;
+  const stored=loadAll()||{sessions:[]};
+  const list=stored.sessions.slice();
+  list.push(liveSession());
+  lifeAgg=aggSessions(list);
+}
+// earned presence: 0 means the room has not yet seen enough to remember this
+function ghostBase(i,t){
+  const agg=lifeAgg||aggSessions([liveSession()]);
+  switch(i){
+    case 0:
+      if(agg.dwell.window>45000)
+        return Math.min(1,(agg.dwell.window-45000)/60000)*0.5;
+      return 0;
+    case 1:
+      {const n=(agg.retreats.drawer||0)+(agg.hesit.drawer||0);
+       return n>=1?Math.min(0.5,0.18+0.05*n):0;}
+    case 2:
+      return (agg.taps.chair>=1&&!S.seated)?0.35:0;
+    case 3:
+      return (bookUnread&&S.doorOpen)?0.45:0;
+    case 4:
+      return (habits.lamp!==null)?0.30:0;
+    case 5:
+      return 0;                       // the reader belongs to the finale alone
+    case 6:
+      return (habits.boardSettle&&!S.boardLifted)?0.30:0;
+    case 7:
+      return (agg.idle>=60000)?0.4:0;
+  }
+  return 0;
+}
+// the hint schedule: one faint memory at a time, at random
+let ambIdx=-1, ambUntil=0, ambNextT=0;
+
+/* ============ THE FURNITURE FITTER (?dev) ============ */
+let furnPreview=false, selFurn=1, furnDrag=false, dragOX=0, dragOY=0;
+function furnAnchor(i){
+  const L=LAY;
+  switch(FKEYS[i]){
+    case 'floor': return {x:vw*0.5,y:L.floorY,r:46};
+    case 'door': return {x:L.door.ax,y:L.door.ay,r:46};
+    case 'win': return {x:L.win.ax,y:L.win.ay,r:46};
+    case 'clock': return {x:L.clock.ax,y:L.clock.ay,r:38};
+    case 'desk': return {x:L.desk.cx,y:L.desk.top,r:46};
+    case 'lamp': return {x:L.lamp.ax,y:L.lamp.ay,r:34};
+    case 'book': return {x:L.book.ax,y:L.book.ay,r:30};
+    case 'drawer': return {x:L.drawer.ax,y:L.drawer.ay,r:38};
+    case 'board': return {x:L.board.ax,y:L.board.ay,r:38};
+    case 'chair': return {x:L.chair.ax,y:L.chair.ay,r:40};
+    case 'ledger': return {x:L.ledger.ax,y:L.ledger.ay,r:30};
+  }
+}
+function furnAt(x,y){
+  let best=-1,bd=1e9;
+  for(let i=0;i<FKEYS.length;i++){
+    const a=furnAnchor(i);
+    const d=(a.x-x)**2+(a.y-y)**2;
+    if(d<26*26&&d<bd){ bd=d; best=i; }
+  }
+  return best;
+}
 
 // ---------- pointer & presence ----------
 const palm={x:0,y:0}, mouse={x:0,y:0};
@@ -499,17 +633,65 @@ function nearest(x,y){
 }
 canvas.addEventListener('pointerdown',e=>{
   if(e.button!==0) return;
-  armAudio();                       // the room is silent until you touch it
+  armAudio();
   mouse.x=palm.x=e.clientX; mouse.y=palm.y=e.clientY;
   downX=e.clientX; downY=e.clientY;
+  if(DEV&&!furnPreview){
+    const fi=furnAt(e.clientX,e.clientY);
+    if(fi>=0){
+      selFurn=fi; furnDrag=true;
+      const f=furn[FKEYS[fi]];
+      dragOX=e.clientX-(f.xF!==undefined?f.xF*vw:0);
+      dragOY=e.clientY-f.yF*vh;
+      return;
+    }
+  }
 });
 window.addEventListener('pointermove',e=>{
   mouse.x=e.clientX; mouse.y=e.clientY;
   lastMoveT=performance.now();
+  if(DEV&&furnDrag){
+    const f=furn[FKEYS[selFurn]];
+    if(f.xF!==undefined) f.xF=(e.clientX-dragOX)/vw;
+    f.yF=(e.clientY-dragOY)/vh;
+    saveFurn(); layout();
+  }
 });
 canvas.addEventListener('pointerup',e=>{
+  if(DEV&&furnDrag){ furnDrag=false; saveFurn(); layout(); return; }
   if(Math.hypot(e.clientX-downX,e.clientY-downY)>8) return;
   act(nearest(e.clientX,e.clientY),e.clientX,e.clientY);
+});
+window.addEventListener('wheel',e=>{
+  if(!DEV||furnPreview) return;
+  const k=FKEYS[selFurn];
+  if(k==='floor') return;
+  const f=furn[k];
+  f.sF=Math.max(0.3,Math.min(3,f.sF*(e.deltaY<0?1.02:0.98)));
+  saveFurn(); layout();
+},{passive:true});
+window.addEventListener('keydown',e=>{
+  if(!DEV) return;
+  const k=FKEYS[selFurn], f=furn[k];
+  const st=e.shiftKey?0.01:0.001;
+  let used=true;
+  if(e.key==='['){ selFurn=(selFurn+FKEYS.length-1)%FKEYS.length; }
+  else if(e.key===']'){ selFurn=(selFurn+1)%FKEYS.length; }
+  else if(e.key>='1'&&e.key<='9'){ selFurn=parseInt(e.key); }
+  else if(e.key==='0'){ selFurn=10; }
+  else if(e.key==='f'||e.key==='F'){ selFurn=0; }
+  else if(e.key==='ArrowLeft'&&f.xF!==undefined){ f.xF-=st; }
+  else if(e.key==='ArrowRight'&&f.xF!==undefined){ f.xF+=st; }
+  else if(e.key==='ArrowUp'){ f.yF-=st; }
+  else if(e.key==='ArrowDown'){ f.yF+=st; }
+  else if(e.key==='p'||e.key==='P'){ furnPreview=!furnPreview; }
+  else if(e.key==='c'||e.key==='C'){
+    const s='const BAKED_FURN='+JSON.stringify(furn)+';';
+    try{ navigator.clipboard.writeText(s); }catch(err){}
+    console.log('%cPaste into DEF_FURN when happy:\n'+s,'color:#ffd9a0');
+  }
+  else used=false;
+  if(used){ saveFurn(); layout(); e.preventDefault(); }
 });
 
 // ---------- object actions ----------
@@ -519,6 +701,7 @@ function act(id,x,y){
   tel.taps[id]++; tappedDuringHover=true;
   tel.tapSeq.push([Math.round(performance.now()-sessionStartT),id]);
   if(tel.tapSeq.length>40) tel.tapSeq.shift();
+  cardObj=(id==='page')?'drawer':id;
   if(id==='lamp'){ S.lampOn=!S.lampOn; sfxLamp(); }
   else if(id==='door'){
     S.doorOpen=!S.doorOpen; sfxDoor();
@@ -572,24 +755,20 @@ function openCard(c,x,y,kind){
     el.textContent=txt;
     cardEl.appendChild(el);
   });
-  cardEl.style.left=Math.min(Math.max(x+36,12),Math.max(12,vw-320))+'px';
-  cardEl.style.top=Math.min(Math.max(y-20,12),Math.max(12,vh-260))+'px';
+  cardEl.style.left=Math.min(Math.max(x+36,12),Math.max(12,vw-332))+'px';
+  cardEl.style.top=Math.min(Math.max(y-20,12),Math.max(12,vh-280))+'px';
   requestAnimationFrame(()=>cardEl.classList.add('show'));
 }
-function closeCard(){ cardOpen=false; cardKind=null; cardEl.classList.remove('show'); }
+function closeCard(){ cardOpen=false; cardKind=null; cardObj=null; cardEl.classList.remove('show'); }
 function showChapter(i,x,y){
   const c=chapters[i];
   const wasUnread=bookUnread;
   openCard({era:c.last?'The Book \u00b7 The Last Chapter':'The Book \u00b7 Chapter '+c.n,
             lines:c.lines},x,y,'book');
   sfxPage();
-  if(c.last){                                     // the finale, undersung
-    tone(87.31,0.035,3.5,0);
-    tone(65.41,0.03,4.2,0.35);
-  } else if(wasUnread&&i===chapters.length-1){
-    sfxChime();
-  }
-  c.lines.forEach((_,li)=>sfxPen(0.12+li*1.05));   // the pen, drying line by line
+  if(c.last){ tone(87.31,0.06,3.5,0); tone(65.41,0.05,4.2,0.35); }
+  else if(wasUnread&&i===chapters.length-1){ sfxChime(); }
+  c.lines.forEach((_,li)=>sfxPen(0.12+li*1.05));
 }
 function cardNote(){ return {era:'Found in the Drawer',lines:[
   'A note, in a hand you do not recognize:',
@@ -708,9 +887,9 @@ function drawRoom(t){
     ctx.stroke();
   }
 
-  const B=L.board, bw=46;
+  const B=L.board, bw=B.w;
   ctx.save();
-  ctx.translate(B.ax-bw/2,fy);
+  ctx.translate(B.ax-bw/2,B.by);
   if(S.boardLifted) ctx.rotate(-0.10);
   else ctx.rotate(h('board')*0.02*Math.sin(t*0.02));
   ctx.fillStyle=S.boardLifted?'#2e2415':'#241b10';
@@ -720,7 +899,7 @@ function drawRoom(t){
   ctx.restore();
   if(S.boardLifted){
     ctx.fillStyle='#040302';
-    ctx.fillRect(B.ax-bw/2+4,fy-2,bw-8,8);
+    ctx.fillRect(B.ax-bw/2+4,B.by-2,bw-8,8);
   }
 
   const D=L.door, dx=D.ax-D.w/2;
@@ -752,10 +931,10 @@ function drawRoom(t){
   ctx.strokeStyle='rgba(200,160,100,0.10)';
   ctx.strokeRect(dx-4,D.top-4,D.w+8,D.h+4);
 
-  const C=L.clock, R=22;
+  const C=L.clock, R=C.R;
   ctx.globalCompositeOperation='lighter';
   ctx.globalAlpha=0.10*h('clock');
-  ctx.drawImage(PALMG,C.ax-30,C.ay-30,60,60);
+  ctx.drawImage(PALMG,C.ax-R*1.4,C.ay-R*1.4,R*2.8,R*2.8);
   ctx.globalAlpha=1;
   ctx.globalCompositeOperation='source-over';
   ctx.fillStyle='#1a130c';
@@ -781,21 +960,22 @@ function drawRoom(t){
 
   drawWindow(t,moonE);
 
-  const K=L.desk;
+  const K=L.desk, ks=K.s;
   ctx.fillStyle='#1e150d';
-  ctx.fillRect(K.cx-K.w/2,K.top,K.w,10);
-  ctx.fillRect(K.cx-K.w/2+10,K.top+10,12,K.h-10);
-  ctx.fillRect(K.cx+K.w/2-22,K.top+10,12,K.h-10);
+  ctx.fillRect(K.cx-K.w/2,K.top,K.w,10*ks);
+  ctx.fillRect(K.cx-K.w/2+10*ks,K.top+10*ks,12*ks,K.h-10*ks);
+  ctx.fillRect(K.cx+K.w/2-22*ks,K.top+10*ks,12*ks,K.h-10*ks);
 
-  const DR=L.drawer, dw=K.w*0.44, dh=24;
+  const DR=L.drawer, dw=DR.w, dh=DR.h, ds=DR.s;
   if(S.drawerOpen){
     ctx.fillStyle='#060402';
-    ctx.fillRect(K.cx-dw/2,K.top+12,dw,dh+4);
+    ctx.fillRect(DR.ax-dw/2,DR.ay-dh/2-2*ds,dw,dh+4*ds);
     const PG=LAY.page;
     const pu=0.35+0.25*Math.sin(t*0.003);
     ctx.save();
     ctx.translate(PG.ax,PG.ay+Math.sin(t*0.0022)*1.2);
     ctx.rotate(-0.07);
+    ctx.scale(ds,ds);
     ctx.globalCompositeOperation='lighter';
     ctx.globalAlpha=pu;
     ctx.drawImage(PALMG,-26,-30,52,56);
@@ -818,14 +998,14 @@ function drawRoom(t){
     if(Math.sin(t*0.0013)>0.94) jit+=Math.sin(t*0.09)*1.6;
   }
   ctx.save();
-  ctx.translate(K.cx+jit,K.top+26+(S.drawerOpen?12:0));
+  ctx.translate(DR.ax+jit,DR.ay+(S.drawerOpen?12*ds:0));
   ctx.fillStyle='#241b12';
   ctx.fillRect(-dw/2,-dh/2,dw,dh);
   ctx.strokeStyle='rgba(200,160,100,0.14)';
   ctx.strokeRect(-dw/2,-dh/2,dw,dh);
   ctx.fillStyle='rgba(255,206,120,'+(0.5+h('drawer')*0.45)+')';
   ctx.beginPath();
-  ctx.arc(0,0,2.5,0,Math.PI*2);
+  ctx.arc(0,0,2.5*ds,0,Math.PI*2);
   ctx.fill();
   ctx.restore();
 
@@ -833,12 +1013,13 @@ function drawRoom(t){
   if(bookUnread){
     ctx.globalCompositeOperation='lighter';
     ctx.globalAlpha=0.20+0.12*Math.sin(t*0.004);
-    ctx.drawImage(PALMG,BK.ax-26,BK.ay-26,52,52);
+    ctx.drawImage(PALMG,BK.ax-26*BK.s,BK.ay-26*BK.s,52*BK.s,52*BK.s);
     ctx.globalAlpha=1;
     ctx.globalCompositeOperation='source-over';
   }
   ctx.save();
   ctx.translate(BK.ax,BK.ay);
+  ctx.scale(BK.s,BK.s);
   ctx.rotate(-0.05);
   ctx.fillStyle='#3a2a1c';
   ctx.fillRect(-24,-7,48,9);
@@ -856,19 +1037,21 @@ function drawRoom(t){
   }
   ctx.restore();
 
-  const LP=L.lamp;
+  const LP=L.lamp, ls=LP.s;
+  const baseX=LP.ax-6*ls, baseY=LP.ay+58*ls;
   ctx.fillStyle='#22190f';
   ctx.beginPath();
-  ctx.ellipse(LP.ax,K.top+8,14,5,0,0,Math.PI*2);
+  ctx.ellipse(baseX,baseY+8*ls,14*ls,5*ls,0,0,Math.PI*2);
   ctx.fill();
   ctx.strokeStyle='#2c2214';
-  ctx.lineWidth=3;
+  ctx.lineWidth=3*ls;
   ctx.beginPath();
-  ctx.moveTo(LP.ax,K.top+6);
-  ctx.lineTo(LP.ax+6,LP.ay);
+  ctx.moveTo(baseX,baseY+6*ls);
+  ctx.lineTo(LP.ax,LP.ay);
   ctx.stroke();
   ctx.save();
-  ctx.translate(LP.ax+6,LP.ay);
+  ctx.translate(LP.ax,LP.ay);
+  ctx.scale(ls,ls);
   ctx.fillStyle=S.lampOn?'#4a3620':'#2a2015';
   ctx.beginPath();
   ctx.moveTo(-20,2); ctx.lineTo(20,2);
@@ -883,11 +1066,11 @@ function drawRoom(t){
     const flick=0.06+0.03*Math.sin(t*(0.02+fl*0.05))+fl*0.06;
     ctx.globalCompositeOperation='lighter';
     ctx.globalAlpha=Math.min(0.5,0.22+flick);
-    ctx.drawImage(LAMPG,LP.ax+6-150,LP.ay-150,300,300);
+    ctx.drawImage(LAMPG,LP.ax-150*ls,LP.ay-150*ls,300*ls,300*ls);
     ctx.globalAlpha=0.9;
     ctx.fillStyle='rgba(255,226,170,0.9)';
     ctx.beginPath();
-    ctx.arc(LP.ax+6,LP.ay+4,3.5,0,Math.PI*2);
+    ctx.arc(LP.ax,LP.ay+4*ls,3.5*ls,0,Math.PI*2);
     ctx.fill();
     ctx.globalAlpha=1;
     ctx.globalCompositeOperation='source-over';
@@ -896,6 +1079,7 @@ function drawRoom(t){
   const C2=LAY.chair;
   ctx.save();
   ctx.translate(C2.ax,C2.ay);
+  ctx.scale(C2.s,C2.s);
   ctx.fillStyle='#1f170f';
   ctx.fillRect(-22,0,44,6);
   ctx.fillRect(-26,-52,7,54);
@@ -928,23 +1112,61 @@ function drawRoom(t){
     drawMoonbeam(t,moonE);
   }
 
+  drawGhosts(t);
+
   const LG=LAY.ledger;
   const lp=ledgerOpen?0.5:0.22+0.14*Math.sin(t*0.002);
   ctx.globalCompositeOperation='lighter';
   ctx.globalAlpha=lp+0.2;
-  ctx.drawImage(PALMG,LG.ax-16,LG.ay-16,32,32);
+  ctx.drawImage(PALMG,LG.ax-16*LG.s,LG.ay-16*LG.s,32*LG.s,32*LG.s);
   ctx.globalAlpha=1;
   ctx.globalCompositeOperation='source-over';
   ctx.fillStyle='rgba(255,214,140,'+(0.6+0.3*Math.sin(t*0.002))+')';
   ctx.beginPath();
-  ctx.arc(LG.ax,LG.ay,2.5,0,Math.PI*2);
+  ctx.arc(LG.ax,LG.ay,2.5*LG.s,0,Math.PI*2);
   ctx.fill();
   if(ledgerOpen){
     ctx.strokeStyle='rgba(255,214,140,0.5)';
     ctx.lineWidth=1;
     ctx.beginPath();
-    ctx.arc(LG.ax,LG.ay,10+2*Math.sin(t*0.01),0,Math.PI*2);
+    ctx.arc(LG.ax,LG.ay,(10+2*Math.sin(t*0.01))*LG.s,0,Math.PI*2);
     ctx.stroke();
+  }
+}
+
+function drawGhosts(t){
+  const full=DEV&&!furnPreview;      // dev reference view for alignment
+  for(let i=0;i<8;i++){
+    const g=ghosts[i], f=fit[i];
+    const alpha=full?f.a:Math.min(1,g.fade);
+    if(alpha<=0.012) continue;
+    const hgt=f.hF*vh;
+    const x=f.xF*vw+(full?0:Math.sin(t*0.00035+i*2.1)*1.5);
+    const y=f.yF*vh;
+    ctx.globalCompositeOperation=f.m?'lighter':'source-over';
+    if(g.ok){
+      ctx.globalAlpha=alpha;
+      ctx.drawImage(g.spr,x-hgt/2,y-hgt,hgt,hgt);
+    } else {
+      ctx.globalAlpha=0.5;
+      ctx.strokeStyle='rgba(255,190,110,0.6)';
+      ctx.setLineDash([4,4]);
+      ctx.strokeRect(x-hgt/2,y-hgt,hgt,hgt);
+      ctx.setLineDash([]);
+      ctx.fillStyle='#ffd9a0';
+      ctx.font='11px monospace';
+      ctx.fillText((i+1)+'.png?',x-14,y-hgt/2);
+    }
+  }
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+  if(full){
+    ctx.font='11px monospace';
+    ctx.fillStyle='rgba(255,214,140,0.8)';
+    for(let i=0;i<8;i++){
+      const f=fit[i], hgt=f.hF*vh;
+      ctx.fillText((i+1),f.xF*vw-3,f.yF*vh-hgt-6);
+    }
   }
 }
 
@@ -1035,7 +1257,7 @@ function drawMoonbeam(t,m){
   if(m>0.4){
     const BK=LAY.book;
     ctx.globalAlpha=(m-0.4)*0.6;
-    ctx.drawImage(PALMG,BK.ax-16,BK.ay-16,32,32);
+    ctx.drawImage(PALMG,BK.ax-16*BK.s,BK.ay-16*BK.s,32*BK.s,32*BK.s);
   }
   ctx.globalAlpha=1;
   ctx.globalCompositeOperation='source-over';
@@ -1103,17 +1325,51 @@ function drawLedger(t){
   }
 }
 
+// ---------- the furniture fitter HUD ----------
+function drawDev(){
+  const k=FKEYS[selFurn], f=furn[k];
+  const x=vw-330,y=14,w=316;
+  ctx.fillStyle='rgba(10,8,6,0.88)';
+  ctx.fillRect(x,y,w,92);
+  ctx.strokeStyle='rgba(255,190,110,0.25)';
+  ctx.strokeRect(x,y,w,92);
+  ctx.font='10px monospace';
+  ctx.fillStyle='#ffd9a0';
+  ctx.fillText('FURNITURE FITTER \u00b7 ?dev (ghosts are baked)',x+10,y+18);
+  ctx.fillStyle='#e9d7b5';
+  ctx.fillText(k+' \u00b7 x '+(f.xF!==undefined?f.xF.toFixed(3):'\u2014')+
+               '  y '+f.yF.toFixed(3)+'  s '+(f.sF||1).toFixed(2),x+10,y+34);
+  ctx.fillStyle='#a98d63';
+  ctx.fillText('drag \u271b:move \u00b7 wheel:size \u00b7 arrows:nudge (shift x10)',x+10,y+50);
+  ctx.fillText('[ ]:next \u00b7 1-9,0,F:pick \u00b7 P:preview '+(furnPreview?'ON':'off')+' \u00b7 C:copy',x+10,y+64);
+  ctx.fillText('auto-saved to browser \u00b7 C to bake into file',x+10,y+78);
+  if(!furnPreview){
+    for(let i=0;i<FKEYS.length;i++){
+      const a=furnAnchor(i);
+      const sel=(i===selFurn);
+      ctx.strokeStyle=sel?'rgba(255,214,140,0.95)':'rgba(255,190,110,0.35)';
+      ctx.lineWidth=sel?1.5:1;
+      ctx.beginPath();
+      ctx.moveTo(a.x-8,a.y); ctx.lineTo(a.x+8,a.y);
+      ctx.moveTo(a.x,a.y-8); ctx.lineTo(a.x,a.y+8);
+      ctx.stroke();
+      ctx.font='9px monospace';
+      ctx.fillStyle=sel?'#ffd9a0':'rgba(255,190,110,0.55)';
+      ctx.fillText(FKEYS[i],a.x+10,a.y-6);
+    }
+  }
+}
+
 // ---------- the loop ----------
 const objH={};
 for(const k of OBJ) objH[k]=0;
-let lastT=performance.now(), lastPath=0, lastSave=0;
+let lastT=performance.now(), lastPath=0, lastSave=0, lastShudder=false, lastSnd=0;
 function frame(t){
   const dt=Math.min(120,t-lastT); lastT=t;
 
   doorE+=((S.doorOpen?1:0)-doorE)*Math.min(1,dt/600);
   moonE+=((S.lampOn?0:1)-moonE)*Math.min(1,dt/9000);
 
-  // the room acts on what it has learned — with a sound of its own
   if(!cardOpen&&!ledgerOpen&&t-lastMoveT>30000&&!hoverId){
     if(habits.doorClose&&S.doorOpen&&!actedDoor){
       S.doorOpen=false; actedDoor=true; tel.events.push('doorC'); sfxGroan(140);
@@ -1122,20 +1378,17 @@ function frame(t){
       S.boardLifted=false; actedBoard=true; tel.events.push('boardS'); sfxGroan(210);
     }
   }
-
-  // the drawer, when it wants loudly enough
   const shud=habits.drawerPressure>0&&!S.drawerOpen&&Math.sin(t*0.0013)>0.94;
   if(shud&&!lastShudder) sfxRattle(Math.min(1,habits.drawerPressure/12));
   lastShudder=shud;
 
-  // the room-tone deepens with every arrival; the rain rises at the window
   if(AC&&AC.state==='running'&&t-lastSnd>300){
     lastSnd=t;
-    droneGain.gain.setTargetAtTime(Math.min(0.006+myArrival*0.003,0.035),
+    droneGain.gain.setTargetAtTime(Math.min(0.010+myArrival*0.005,0.06),
                                    AC.currentTime,0.8);
     droneFilt.frequency.setTargetAtTime(Math.max(40,72-myArrival*4),
-                                       AC.currentTime,0.8);
-    const rg=(habits.rainOn?0.004:0)+((hoverId==='window'&&habits.rainOn)?0.012:0);
+                                        AC.currentTime,0.8);
+    const rg=(habits.rainOn?0.010:0)+((hoverId==='window'&&habits.rainOn)?0.028:0);
     rainGain.gain.setTargetAtTime(rg,AC.currentTime,0.4);
   }
 
@@ -1146,7 +1399,7 @@ function frame(t){
     tel.path.push([Math.round(palm.x),Math.round(palm.y)]);
     if(tel.path.length>3000) tel.path.shift();
   }
-  const nowHover=(cardOpen||ledgerOpen)?null:nearest(palm.x,palm.y);
+  const nowHover=(cardOpen||ledgerOpen||(DEV&&furnDrag))?null:nearest(palm.x,palm.y);
   if(nowHover!==hoverId){
     if(hoverId){
       const ep=t-hovEnterT;
@@ -1173,6 +1426,45 @@ function frame(t){
   for(const k of OBJ) objH[k]+=(((hoverId===k)?1:0)-objH[k])*0.12;
   if(t-lastSave>15000){ persist(); lastSave=t; }
 
+  // ---- the memory portraits: hints, not tenants ----
+  updateLife(t);
+  const chp=chapters[bookPage];
+  const lastChOpen=cardOpen&&cardKind==='book'&&chp&&!!chp.last;
+  if(!lastChOpen){
+    if(ambIdx>=0){
+      if(t>ambUntil){ ambIdx=-1; ambNextT=t+9000+Math.random()*17000; }
+    } else if(t>ambNextT){
+      const elig=[];
+      for(let i=0;i<8;i++) if(ghostBase(i,t)>0) elig.push(i);
+      if(elig.length){
+        ambIdx=elig[(Math.random()*elig.length)|0];
+        ambUntil=t+7000+Math.random()*8000;
+      } else ambNextT=t+6000;
+    }
+  } else ambIdx=-1;
+  for(let i=0;i<8;i++){
+    const g=ghosts[i], f=fit[i];
+    let act=false;
+    if(i===7){
+      act=(t-lastMoveT>6000&&!hoverId&&!cardOpen&&!ledgerOpen&&!DEV);
+    } else if(GHOST_LINK[i]){
+      act=(hoverId===GHOST_LINK[i])||(cardOpen&&cardObj===GHOST_LINK[i]);
+    }
+    let tgt=0;
+    if(act) tgt=0.9;                                    // clear, while you interact
+    else if(lastChOpen) tgt=(i===5)?0.5:0.3;             // the complete portrait
+    else if(i===ambIdx) tgt=f.a*(S.lampOn?0.10:0.16);   // a faint hint, one at a time
+    const rising=tgt>g.fade;
+    const rate=act?900:(rising?2500:(g.actPrev?900:2200)); // gone quickly after the text
+    g.tgt=tgt; g.act=act;
+    g.fade+=((tgt-g.fade)*Math.min(1,dt/rate));
+    g.actPrev=act;
+    if(!g.wasIn&&g.fade>0.5&&tgt>=0.5&&!DEV){
+      g.wasIn=true; sfxPen(0); sfxPen(0.45);
+    }
+    if(g.fade<0.03) g.wasIn=false;
+  }
+
   ctx.clearRect(0,0,vw,vh);
   drawRoom(t);
 
@@ -1188,11 +1480,11 @@ function frame(t){
   ctx.globalCompositeOperation='source-over';
 
   if(ledgerOpen||WATCH) drawLedger(t);
+  if(DEV) drawDev();
   requestAnimationFrame(frame);
 }
 window.addEventListener('resize',resize); resize();
 
-// the room opens its eyes: first visit only
 (function firstVisit(){
   const d=loadAll();
   if(!d||!d.sessions.length){
